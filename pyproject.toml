@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "litjev"
 version = "0.1.0"
-description = "Typed Qwen decisions with a Transformers backend, browser playground, and API"
+description = "(Unofficial) Turn any off-the-shelf LLM into a JEV-like decision layer"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

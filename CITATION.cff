@@ -10,6 +10,4 @@ url: "https://github.com/zhengxuyu/litjev"
 version: "0.1.0"
 license: Apache-2.0
 abstract: >-
-  An independent hypothesis-driven implementation of a JEV-like decision layer
-  using Hugging Face Transformers, with typed decisions, a browser playground,
-  and an HTTP API. The first supported target is Qwen.
+  (Unofficial) Turn any off-the-shelf LLM into a JEV-like decision layer.
