@@ -1,26 +1,26 @@
-from litjev.api import McqQuestion, McqRequest
+from test_visual import ImageTokenizer
+
 from litjev.prompting import build_decision_messages
+from litjev.schema import Choice, DecisionSchema
+from litjev.slots import compile_slots
 
 
-def test_prompt_catalog_contains_all_ten_questions_and_options() -> None:
-    questions = [
-        McqQuestion(
-            question_id=f"answer_{index}",
-            prompt=f"Unique problem {index}",
-            options={label: str(i) for i, label in enumerate("ABCDE")},
-        )
-        for index in range(1, 11)
-    ]
-    batch = McqRequest(questions=questions)
-
-    messages = build_decision_messages("Choose", batch.to_schema())
-    prompt = "\n".join(message["content"] for message in messages)
-
-    assert "Unique problem 1" in prompt
-    assert "Unique problem 10" in prompt
-    assert "answer_1" in prompt
-    assert "A." in prompt
-    assert "E." in prompt
-    assert prompt.startswith(
-        "Answer independent multiple-choice questions. You will be asked for one field. "
+def test_question_ids_and_other_questions_never_enter_branch():
+    schema = DecisionSchema(
+        {
+            f"SECRET_ID_{i}": Choice(
+                instructions=f"unique question {i}", criteria={"long option": "yes", "B": "no"}
+            )
+            for i in range(10)
+        }
     )
+    messages = build_decision_messages({"shared": [1, 2]}, schema)
+    assert messages[1]["content"] == '{"shared": [1, 2]}'
+    compiled = compile_slots(ImageTokenizer(), "state", schema)
+    assert all("SECRET_ID" not in text for text in compiled.slot_texts)
+    for i, text in enumerate(compiled.slot_texts):
+        for j in range(10):
+            assert (f"unique question {j}" in text) == (i == j)
+    renamed = DecisionSchema({str(i): q for i, q in enumerate(schema.values())})
+    assert compile_slots(ImageTokenizer(), "state", renamed).input_ids == compiled.input_ids
+    assert compiled.candidates[0] == [ord("A") + 2, ord("B") + 2]

@@ -1,21 +1,32 @@
 import json
 
-from litjev.schema import DecisionSchema
+
+def state_text(state):
+    return (
+        state if isinstance(state, str) else json.dumps(state, ensure_ascii=False, allow_nan=False)
+    )
 
 
-def build_decision_messages(state: str, schema: DecisionSchema) -> list[dict[str, str]]:
-    catalog = {
-        name: {"question": field.description, "choices": field.choices}
-        for name, field in schema.items()
-    }
+def build_decision_messages(state, schema=None):
+    """Only shared state is prefetched; question ids never affect inference."""
     return [
         {
             "role": "system",
             "content": (
-                "Answer independent multiple-choice questions. You will be asked for one field. "
-                "Return only its exact choice label. Do not explain or reason aloud.\n"
-                + json.dumps(catalog, ensure_ascii=False)
+                "Evaluate the state using the question and labeled options that follow. "
+                "Return only the option code. Do not explain or reason aloud."
             ),
         },
-        {"role": "user", "content": state},
+        {"role": "user", "content": state_text(state)},
     ]
+
+
+def question_suffix(question, codes):
+    options = [
+        {"code": codes[i], "option": key, "description": description}
+        for i, (key, description) in enumerate(
+            zip(question.choices, question.descriptions, strict=True)
+        )
+    ]
+    body = {"type": question.type, "instructions": question.instructions, "options": options}
+    return "Question: " + json.dumps(body, ensure_ascii=False, allow_nan=False) + "\nAnswer:"

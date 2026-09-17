@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from litjev.calibration import CalibrationProfile, TemperatureCalibrator
+from litjev.slots import SLOT_FORMAT
 
 
 def serve():
@@ -50,7 +51,7 @@ def mmlu():
     parser.add_argument("--split", choices=["validation", "test"], default="test")
     parser.add_argument("--revision", default="main")
     parser.add_argument("--limit", type=int, default=10)
-    parser.add_argument("--url", default="http://127.0.0.1:8000/v1/batch-mcq")
+    parser.add_argument("--url", default="http://127.0.0.1:8000/v1/systemone/debug")
     parser.add_argument("--output", default="mmlu-results.json")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--export-logits", help="Validation-only calibration JSONL")
@@ -75,19 +76,21 @@ def mmlu():
             )
             started = time.perf_counter()
             with urllib.request.urlopen(wire, timeout=1800) as response:
-                result = json.load(response)
+                envelope = json.load(response)
+                result = envelope["result"]
             run.update(response=result, elapsed_seconds=time.perf_counter() - started)
             run["correct"] = sum(
-                result["answers"][key]["value"] == labels[key] for key in valid_ids
+                result["answers"][key]["choice"] == labels[key] for key in valid_ids
             )
         runs.append(run)
         if args.export_logits:
             for key in valid_ids:
-                answer = result["answers"][key]
-                choices = list(next(q for q in batch.questions if q.question_id == key).options)
+                answer = envelope["diagnostics"]["fields"][key]
+                choices = list(batch.questions[key].criteria)
                 calibration_records.append(
                     {
                         "split": "validation",
+                        "slot_format": SLOT_FORMAT,
                         "question_id": key,
                         "logits": answer["logits"],
                         "label": choices.index(labels[key]),
@@ -123,6 +126,10 @@ def calibrate():
         parser.error("Calibration input is empty")
     if any(row.get("split") != "validation" for row in rows):
         parser.error("Every calibration record must declare split=validation")
+    if any(row.get("slot_format") != SLOT_FORMAT for row in rows):
+        parser.error(
+            "Calibration logits must use the current slot_format; re-export validation logits"
+        )
     max_choices = max(len(row["logits"]) for row in rows)
     logits = np.full((len(rows), max_choices), -1e30)
     for i, row in enumerate(rows):

@@ -1,3 +1,5 @@
+"""Jev-compatible standard endpoint and a separate LitJev diagnostics extension."""
+
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
@@ -7,51 +9,20 @@ from time import perf_counter
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field
 
-from litjev.schema import DecisionSchema
-
-
-class McqQuestion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    question_id: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-    options: dict[str, str] = Field(min_length=2, max_length=10)
+from litjev.decision import DecisionResponse
+from litjev.prompting import state_text
+from litjev.schema import SystemOneRequest
+from litjev.vision import MAX_BASE64_LENGTH, VisualState, decode_image
 
 
-class McqRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    questions: list[McqQuestion] = Field(min_length=10, max_length=10)
-
-    @model_validator(mode="after")
-    def unique_ids(self):
-        if len({q.question_id for q in self.questions}) != 10:
-            raise ValueError("Question IDs must be unique")
-        return self
-
-    def to_schema(self):
-        return DecisionSchema.from_mapping(
-            {
-                q.question_id: {
-                    "type": "enum",
-                    "choices": list(q.options),
-                    "description": q.prompt
-                    + "\n"
-                    + "\n".join(f"{label}. {text}" for label, text in q.options.items()),
-                }
-                for q in self.questions
-            }
-        )
-
-
-class SchemaRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    state: str
-    schema_def: dict[str, dict] = Field(alias="schema", min_length=1, max_length=10)
+class DebugRequest(SystemOneRequest):
+    image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
 
 
 def create_app(engine_factory):
-    app = FastAPI(title="LitJev ten-question decisions")
+    app = FastAPI(title="LitJev System One")
     get_engine = lru_cache(maxsize=1)(engine_factory)
     load_lock = Lock()
     static_dir = Path(__file__).parent / "static"
@@ -61,16 +32,33 @@ def create_app(engine_factory):
     def playground():
         return FileResponse(static_dir / "index.html")
 
-    def evaluate(state, schema):
+    @app.get("/film", include_in_schema=False)
+    def film_playground():
+        return FileResponse(static_dir / "film.html")
+
+    @app.get("/example", include_in_schema=False)
+    def example():
+        return FileResponse(static_dir / "example.json")
+
+    def evaluate(request, image=None):
         try:
             started = perf_counter()
-            # lru_cache alone may execute its factory twice on concurrent cold requests.
+            schema = request.to_schema()
+            state = request.state
+            if image is not None:
+                state = VisualState(state_text(state), decode_image(image))
+            # Validate schemas and images before loading weights.
             with load_lock:
                 engine = get_engine()
+            if request.model not in {"litjev", engine.model_id}:
+                raise ValueError(
+                    "Requested model is not loaded; use 'litjev' or the loaded model ID"
+                )
             ready = perf_counter()
-            result = asdict(engine.decide(state, schema))
+            evaluation = engine.evaluate(state, schema)
             finished = perf_counter()
-            result["timing"] = {
+            result = asdict(evaluation)
+            result["diagnostics"]["timing"] = {
                 "model_setup_seconds": ready - started,
                 "decision_seconds": finished - ready,
                 "total_seconds": finished - started,
@@ -83,16 +71,12 @@ def create_app(engine_factory):
     def health():
         return {"status": "ok", "model_loaded": get_engine.cache_info().currsize > 0}
 
-    @app.post("/v1/batch-mcq")
-    def batch_mcq(request: McqRequest):
-        return evaluate("Answer each question using its listed options.", request.to_schema())
+    @app.post("/v1/systemone", response_model=DecisionResponse)
+    def systemone(request: SystemOneRequest):
+        return evaluate(request)["result"]
 
-    @app.post("/v1/calibrated-schema")
-    def schema_decision(request: SchemaRequest):
-        try:
-            schema = DecisionSchema.from_mapping(request.schema_def)
-        except ValueError as error:
-            raise HTTPException(422, str(error)) from error
-        return evaluate(request.state, schema)
+    @app.post("/v1/systemone/debug")
+    def systemone_debug(request: DebugRequest):
+        return evaluate(request, request.image)
 
     return app

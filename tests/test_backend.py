@@ -4,7 +4,7 @@ import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from litjev.backend import TransformersScorer
-from litjev.schema import DecisionField, DecisionSchema
+from litjev.schema import Choice, DecisionSchema
 
 
 class TinyTokenizer:
@@ -75,7 +75,10 @@ def test_two_forwards_match_original_independent_branches(architecture):
 
     scorer = TransformersScorer(model, BoundaryTokenizer())
     schema = DecisionSchema(
-        {f"q{i}": DecisionField.enum(f"q{i}", "Pick", ["A", "B"]) for i in range(1, 11)}
+        {
+            f"q{i}": Choice(instructions=f"Pick {i}", criteria={"A": None, "B": None})
+            for i in range(1, 11)
+        }
     )
     calls = []
     hook = model.register_forward_pre_hook(
@@ -87,7 +90,8 @@ def test_two_forwards_match_original_independent_branches(architecture):
     assert calls[0][0] == 1
     assert calls[1][0] == 10
     compiled = scorer._compile("state", schema)
-    assert compiled.slot_texts == [f'Field "q{i}"\nAnswer:' for i in range(1, 11)]
+    assert all(text.endswith("\nAnswer:") for text in compiled.slot_texts)
+    assert all('"q1"' not in text for text in compiled.slot_texts)
     evidence = scores[0].provenance
     assert evidence["module"] == "lm_head"
     assert evidence["last_decoder_layer_index"] == 1

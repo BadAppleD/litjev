@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from litjev.calibration import TemperatureCalibrator
+from litjev.calibration import CalibrationProfile, TemperatureCalibrator
 
 
 def test_temperature_calibration_reduces_overconfident_nll() -> None:
@@ -33,3 +34,10 @@ def test_calibration_profile_round_trip(tmp_path) -> None:
     restored = profile.load(path)
 
     assert restored == profile
+
+
+def test_pre_migration_profiles_cannot_be_silently_reused(tmp_path):
+    path = tmp_path / "old.json"
+    path.write_text('{"temperature": 2, "sample_count": 2, "nll_before": 1, "nll_after": 0.5}')
+    with pytest.raises(ValueError, match="refit"):
+        CalibrationProfile.load(path)

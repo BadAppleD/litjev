@@ -8,12 +8,13 @@ LLMs into typed decision APIs, with a browser playground and HTTP server include
 JEV-like 决策层，将 off-the-shelf 大模型快速接入 JEV-like API。
 这一猜想来自公开信息，不代表 Jev 的真实内部架构；当前首先保证 Qwen 可用。
 
-Evaluate up to ten multiple-choice or boolean fields per request. LitJev reads
+Evaluate Choice, Score and Noul questions in one request, including ten-question batches. LitJev reads
 candidate scores from the model's output head and builds typed responses in Python:
 no generated JSON, no answer-text parsing, and no generated answer tokens.
 
 > Independent research project, not affiliated with or endorsed by TypeSafe AI.
-> Not the official Jev implementation or an API-compatible replacement today.
+> Not the official Jev implementation. Request/response JSON follows the public
+> Jev schema; model behavior, confidence values and hosting features are not identical.
 > First supported target: `Qwen/Qwen3.8-27B`. Probabilities are **not calibrated by
 > default**. Other checkpoints are not guaranteed to work.
 
@@ -62,7 +63,7 @@ The server binds to loopback only, with one process owning the model.
 Interactive API documentation: **http://127.0.0.1:8000/docs**.
 
 ```bash
-curl --fail-with-body http://127.0.0.1:8000/v1/calibrated-schema \
+curl --fail-with-body http://127.0.0.1:8000/v1/systemone \
   -H 'Content-Type: application/json' \
   --data-binary @examples/request.json
 ```
@@ -71,52 +72,82 @@ Example request:
 
 ```json
 {
+  "model": "litjev",
   "state": "Answer each question using its listed options.",
-  "schema": {
+  "questions": {
     "math": {
-      "type": "enum",
-      "description": "What is 2 + 3?\nA. 4\nB. 5\nC. 6",
-      "choices": ["A", "B", "C"]
+      "type": "choice",
+      "instructions": "What is 2 + 3?",
+      "criteria": {"A": "4", "B": "5", "C": "6"}
     },
-    "planet": {
-      "type": "enum",
-      "description": "Which planet is closest to the Sun?\nA. Venus\nB. Mars\nC. Mercury",
-      "choices": ["A", "B", "C"]
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is the state?",
+      "criteria": ["Not urgent", "Urgent", "Critical"]
+    },
+    "needs_review": {
+      "type": "noul",
+      "instructions": "Does this need human review?"
     }
   }
 }
 ```
 
-This is a **field mapping, not JSON Schema**. Requests contain 1–10 fields.
-`enum` requires a description and unique choices; `boolean` requires a description
-and uses `true`/`false` candidates. Every choice must encode as a single token at the
-answer boundary. Multi-token labels are rejected, not truncated. Use A–J and put
-option meanings in the description.
+This is a **Jev questions mapping, not JSON Schema**. The bundled request and
+playground example contain the same ten questions. `state` accepts a string, object,
+or array. `instructions` and criterion descriptions accept strings, objects, arrays,
+or null. `instructions` may be omitted. Question IDs are never sent to the model.
 
-Each entry in `answers` includes:
+| Type | Criteria | Answer fields |
+| --- | --- | --- |
+| `choice` | Map of up to 255 option keys to descriptions | `type`, `choice`, `probabilities`, `confidence` |
+| `score` | Ordered array of 2–10 level descriptions | `type`, `score`, `legend`, `probabilities`, `confidence` |
+| `noul` | Optional map with `true` and/or `false` descriptions | `type`, `noul` |
 
-| Field | Meaning |
-| --- | --- |
-| `value` | Selected choice string, or boolean |
-| `probabilities` | Softmax distribution over supplied candidates |
-| `gamma` | Maximum candidate probability, not a validated correctness estimate |
-| `logits` | Raw candidate logits in choice order |
-| `provenance` | Output-head position, token IDs, suffix, and temperature |
+Choice returns the original option key, even when it contains multiple tokens.
+Score returns the probability-weighted level index (0-based), not the winning level.
+Noul returns P(yes), not a boolean. Score `legend` preserves original descriptions.
 
-The response also includes `model`, `usage`, `calibration_fitted`, and `timing`.
-This backend reports `usage.forward_calls=2` and `usage.output_tokens=0`.
+The standard response contains **only** `model`, `answers`, and
+`usage: {input_tokens, output_tokens}`. `output_tokens` is zero.
+Request `model` must be `litjev` (local alias) or the loaded checkpoint ID; the
+response reports the actual checkpoint, never pretends to be `jev-latest`.
 
-Other endpoints:
-
-- `GET /health`: service status and whether weights have loaded.
-- `POST /v1/batch-mcq`: exactly ten `questions`, each with `question_id`, `prompt`,
-  and `options` (a label-to-description mapping). Used by the benchmark CLI.
+For timings and raw logits, POST the same body to **`/v1/systemone/debug`**.
+Its envelope is `{result, diagnostics}`: `result` is the standard response;
+`diagnostics` holds `fields.*.{logits, probabilities, max_probability, provenance}`,
+`forward_calls`, `confidence_method`, `calibration_fitted`, and `timing`.
+The playground and visual games use this extension. `GET /health` stays lightweight.
+The old `/v1/calibrated-schema` and `/v1/batch-mcq` routes have been removed;
+old `schema`/`enum`/`boolean` request objects are rejected rather than silently converted.
 
 The playground displays probability bars, JSON, logit provenance, and timing.
 `model_setup_seconds` includes first-use loading; `decision_seconds` includes
 tokenization, inference-lock waiting, and inference. `total_seconds` sums these
 server phases. Browser round-trip time also includes transport. These are not
 GPU-kernel-only timings.
+
+## Visual games: Doom, chess, and film
+
+Play from screenshots with the same off-the-shelf Qwen weights—no training. The
+ported Doom (seven buttons) and chess (five controller keys) examples share a
+Gymnasium interface and a LitJev policy supporting either local inference or HTTP.
+
+```bash
+# Start the model server, then run a game in another terminal.
+uv run --locked --extra games litjev --model Qwen/Qwen3.8-27B
+uv run --locked --extra games litjev-play chess --max-steps 100 --output runs/chess.json
+uv run --locked --extra games litjev-play doom --max-steps 100 --output runs/doom.json
+uv run --locked --extra games litjev-film runs/chess.json --output runs/chess.html
+```
+
+Open `/film` to inspect traces, or open the standalone HTML. The screenshot playground
+also accepts PNG/JPEG uploads. Only the debug API adds an optional base64 `image` field;
+it never substitutes hidden game state or text descriptions for pixels.
+See [visual games](docs/visual-games.md) for the complete interface, timing boundaries,
+MP4 export, and limitations. No gameplay quality or real-time performance is promised.
+The examples are adapted from [jevlike](https://github.com/vinnylarouge/jevlike), with
+[MIT attribution retained](THIRD_PARTY_NOTICES.md).
 
 ## Python usage
 
@@ -132,40 +163,48 @@ scorer = TransformersScorer.load(ModelSettings(model_id=model))
 engine = SchemaDecisionEngine(scorer, model_id=model)
 schema = DecisionSchema.from_mapping({
     "math": {
-        "type": "enum",
-        "description": "What is 2 + 3? A. 4 B. 5",
-        "choices": ["A", "B"],
+        "type": "choice",
+        "instructions": "What is 2 + 3?",
+        "criteria": {"A": "4", "B": "5"},
     }
 })
 result = engine.decide("Choose the correct answer.", schema)
-print(result.answers["math"].value)
+print(result.answers["math"].choice)
 print(asdict(result))
+# For logits and provenance: engine.evaluate(state, schema) -> Evaluation(result, diagnostics)
 ```
 
 ## How it works
 
-1. **Shared prefill:** encode the state and complete question catalog once.
-2. **Cached branches:** replicate KV/recurrent states and batch each field's short
-   `Field "key"\nAnswer:` suffix in a second forward pass.
+1. **Shared prefill:** encode only the state and generic instructions once.
+2. **Cached branches:** replicate KV/recurrent states and batch each question's
+   instructions and criteria in a second forward pass, ending with `Answer:`.
+   Original option keys map to internal letter codes (A–Z, then eligible AA…ZZ/AAA…ZZZ), verified as single tokens
+   at this boundary. Unsupported tokenizers are rejected, never truncated.
 3. **Readout:** take `output.logits[i, len(suffix_ids[i]) - 1, candidate_ids[i]]`.
    For Qwen, these are vocabulary-head (`lm_head`) logits after the final decoder
-   normalization, at the colon position predicting the next token.
+   normalization, at the final input position (the colon for Qwen), predicting
+   a space-prefixed internal code token. These codes are not generated.
 4. **Typed response:** normalize candidate logits, select the maximum, and build
    JSON in code. No autoregressive answer generation is performed.
 
-Branches cannot see one another's suffixes or results. **Each still sees all
-questions in the shared catalog**; batch composition can affect answers. Question
-IDs enter the prompt. This is not fully isolated question evaluation.
+Branches cannot see one another's questions or results. Renaming a question ID
+does not change its model input. This schema migration changes the prompt compared
+with the original catalog-based version, so historical accuracy, calibration profiles
+and latency numbers must not be applied to it without re-evaluation.
 
 ### Relationship to Jev
 
 LitJev is inspired by typed decision APIs, but does not reproduce Jev's training
 or proprietary internals. In this release:
 
-- Requests use `state` + `schema`, with `enum`/`boolean` fields.
-- Jev-style `questions`, `criteria`, Choice/Score/Noul, and `/v1/systemone` are
-  **not implemented yet**.
-- `gamma` is max softmax probability, not Jev's confidence statistic.
+- `/v1/systemone` follows the public `model / state / questions` request and typed
+  response shapes, including structured criteria. See the [migration matrix](docs/jev-schema.md).
+- Jev's exact confidence formula is not published in the referenced docs. LitJev
+  uses normalized Gini concentration: `(K * sum(p_i²) - 1) / (K - 1)` for K > 1,
+  and 1 for a single option. Uniform distributions yield 0, point masses yield 1.
+  This is **not max probability**, not an accuracy estimate, and not a claim of
+  numerical parity with Jev.
 - No RLCD training, learned correctness head, or one-forward guarantee is provided.
 
 References: [TypeSafe documentation](https://docs.typesafe.ai/introduction) and the
@@ -174,7 +213,7 @@ These are independent external projects, not endorsements.
 
 ## Calibration
 
-Default responses have `calibration_fitted=false`. Normalization does not establish
+Default debug diagnostics have `calibration_fitted=false`. Normalization does not establish
 calibration. Optional post-hoc temperature fitting is available:
 
 ```bash
@@ -205,10 +244,12 @@ exports requests without inference; `--revision COMMIT` pins the dataset snapsho
 Incomplete final batches use duplicate padding excluded from metrics. Invalid or
 non-MCQ records are skipped with reasons.
 
-A ten-question smoke experiment on one H100 80 GB achieved 9/10 and approximately
+A **historical, pre-migration** ten-question smoke experiment on one H100 80 GB achieved 9/10 and approximately
 0.472 s per warm ten-question request (mean of three repeats). This is not a full
 MMLU-Pro score or a latency guarantee. Repeated questions are not extra test examples;
-loading, queueing, and HTTP overhead are excluded from this measurement.
+loading, queueing, and HTTP overhead are excluded from this measurement. It used the
+old shared question catalog, not the current isolated question
+branches. No current 27B accuracy/latency result is claimed by this migration.
 
 See [Slurm usage](docs/slurm.md) for configurable cluster launchers. Raw local
 experiment outputs are excluded from the public distribution because they contain
@@ -217,7 +258,7 @@ machine paths, hostnames, and dataset text.
 ## Development
 
 ```bash
-uv sync --locked --extra dev
+uv sync --locked --extra dev --extra games
 uv run pytest -q
 uv run ruff check .
 uv build
@@ -234,7 +275,9 @@ proxy before granting remote access.
 
 ## License
 
-[Apache License 2.0](LICENSE) for this repository's original code. Model weights,
+[Apache License 2.0](LICENSE) for this repository's original code. Adapted jevlike
+example files retain their [MIT license](THIRD_PARTY_LICENSES/jevlike-MIT.txt);
+see [third-party notices](THIRD_PARTY_NOTICES.md). Model weights,
 datasets, and third-party dependencies retain their own licenses and are not bundled
 here.
 
