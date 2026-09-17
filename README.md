@@ -1,11 +1,11 @@
 # LitJev
 
 **An implementation of our hypothesis about Jev.** Built with Hugging Face
-Transformers, LitJev implements a JEV-like decision layer that adapts off-the-shelf
+Transformers, LitJev implements a Jev decision layer that adapts off-the-shelf
 LLMs into typed decision APIs, with a browser playground and HTTP server included.
 
 这是我们对 Jev 实现方式的猜想实现：基于 Hugging Face Transformers 构建
-JEV-like 决策层，将 off-the-shelf 大模型快速接入 JEV-like API。
+Jev 决策层，将 off-the-shelf 大模型快速接入 Jev API。
 这一猜想来自公开信息，不代表 Jev 的真实内部架构；当前首先保证 Qwen 可用。
 
 Evaluate Choice, Score and Noul questions in one request, including ten-question batches. LitJev reads
@@ -302,7 +302,7 @@ must still preserve the applicable notices described above.
 ```bibtex
 @software{litjev2026,
   author  = {{ZhengxuYu}},
-  title   = {LitJev: A JEV-like Decision Layer for Off-the-Shelf LLMs},
+  title   = {LitJev: A Jev Decision Layer for Off-the-Shelf LLMs},
   year    = {2026},
   version = {0.1.0},
   url     = {https://github.com/zhengxuyu/litjev}
