@@ -6,7 +6,12 @@ from litjev.games.preview import create_preview_app
 
 def test_random_preview_runs_real_doom_without_model():
     with TestClient(create_preview_app(seed=7, max_steps=2, resolution="160x120")) as client:
-        assert client.get("/").status_code == 200
+        page = client.get("/")
+        assert page.status_code == 200
+        assert 'id="probabilities"' in page.text
+        assert 'id="trace-data"' in page.text
+        assert 'id="live-config" type="application/json">true' in page.text
+        assert '先让随机策略玩起来' not in page.text
         initial = client.get("/state").json()
         assert initial["policy"] == "uniform_random"
         assert initial["step"] == 0

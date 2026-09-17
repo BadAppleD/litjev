@@ -101,6 +101,8 @@ Open `http://127.0.0.1:8012/`. Seven actions have equal probability. The browser
 advances the real environment, shows action/reward/step timing, and offers pause,
 reset and speed controls. Episodes restart automatically; hidden tabs stop stepping.
 This local preview is a shared single environment, not a multi-user model service.
+Live preview and recorded replay use the same ported `film.html` layout and decision
+renderer; random mode labels its uniform probabilities and does not fabricate logits.
 
 `POST /v1/systemone/debug` accepts `{model, state, questions}` plus an optional
 `image` field containing a PNG/JPEG

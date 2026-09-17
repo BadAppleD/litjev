@@ -8,7 +8,7 @@ from time import perf_counter
 
 import numpy as np
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 
 from litjev.games import make_env
 from litjev.vision import encode_image
@@ -74,7 +74,8 @@ def create_preview_app(seed=7, max_steps=1000, resolution="640x480"):
 
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(Path(__file__).parents[1] / "static" / "doom-preview.html")
+        template = (Path(__file__).parents[1] / "static" / "film.html").read_text()
+        return HTMLResponse(template.replace('"__LITJEV_LIVE__"', 'true', 1))
 
     @app.get("/state")
     def state():
