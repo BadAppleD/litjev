@@ -1,0 +1,15 @@
+{
+  "state": "Answer each question using its listed options.",
+  "schema": {
+    "math": {
+      "type": "enum",
+      "description": "What is 2 + 3?\nA. 4\nB. 5\nC. 6",
+      "choices": ["A", "B", "C"]
+    },
+    "planet": {
+      "type": "enum",
+      "description": "Which planet is closest to the Sun?\nA. Venus\nB. Mars\nC. Mercury",
+      "choices": ["A", "B", "C"]
+    }
+  }
+}
