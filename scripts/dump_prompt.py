@@ -7,7 +7,7 @@ from pathlib import Path
 
 from transformers import AutoTokenizer
 
-from litjev.api import McqRequest
+from litjev.schema import SystemOneRequest
 from litjev.slots import compile_slots
 
 
@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--input", default="mmlu-request-preview.json")
     parser.add_argument("--output-dir", default="results")
     args = parser.parse_args()
-    request = McqRequest.model_validate(
+    request = SystemOneRequest.model_validate(
         json.loads(Path(args.input).read_text())["runs"][0]["request"]
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model, local_files_only=True)

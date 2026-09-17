@@ -1,9 +1,19 @@
 """Gold labels stay outside model requests."""
 
-from litjev.api import McqQuestion, McqRequest
+from pydantic import BaseModel
+
+from litjev.schema import Choice, SystemOneRequest
 
 DATASET_ID = "TIGER-Lab/MMLU-Pro"
 LABELS = "ABCDEFGHIJ"
+
+
+class McqQuestion(BaseModel):
+    """Dataset preparation record, not an HTTP request schema."""
+
+    question_id: str
+    prompt: str
+    options: dict[str, str]
 
 
 def convert_rows(rows):
@@ -45,4 +55,13 @@ def ten_question_batches(questions):
             if any(q.question_id == padding_id for q in questions):
                 raise ValueError("Question ID collides with padding namespace")
             group.append(group[0].model_copy(update={"question_id": padding_id}))
-        yield McqRequest(questions=group), valid_ids
+        yield (
+            SystemOneRequest(
+                model="litjev",
+                state="Answer each question using its listed options.",
+                questions={
+                    q.question_id: Choice(instructions=q.prompt, criteria=q.options) for q in group
+                },
+            ),
+            valid_ids,
+        )

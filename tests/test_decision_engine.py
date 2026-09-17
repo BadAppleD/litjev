@@ -1,36 +1,27 @@
-from dataclasses import dataclass
-
 import numpy as np
+import pytest
 
-from litjev.decision import RawFieldScores, SchemaDecisionEngine
-from litjev.schema import DecisionSchema
+from litjev.decision import RawFieldScores, SchemaDecisionEngine, concentration
+from litjev.schema import Choice, DecisionSchema, Noul
 
 
-@dataclass
 class FakeLogitProvider:
     def score(self, state, schema):
-        del state
-        assert schema.names == ("q1", "q2")
         return (
             RawFieldScores("q1", np.array([3.0, 1.0]), 12),
             RawFieldScores("q2", np.array([0.0, 4.0]), 12),
         )
 
 
-def test_decision_engine_assembles_typed_values_and_probabilities() -> None:
-    schema = DecisionSchema.from_mapping(
-        {
-            "q1": {"type": "enum", "description": "First", "choices": ["A", "B"]},
-            "q2": {"type": "boolean", "description": "Second"},
-        }
-    )
-    engine = SchemaDecisionEngine(FakeLogitProvider(), temperature=2.0)
-
-    response = engine.decide("state", schema)
-
-    assert response.answers["q1"].value == "A"
-    assert response.answers["q2"].value is False
-    assert response.answers["q1"].gamma < 0.8
-    assert np.isclose(sum(response.answers["q2"].probabilities.values()), 1.0)
+def test_typed_results_and_separate_diagnostics():
+    schema = DecisionSchema({"q1": Choice(criteria={"A": None, "B": None}), "q2": Noul()})
+    engine = SchemaDecisionEngine(FakeLogitProvider(), temperature=2)
+    evaluation = engine.evaluate("state", schema)
+    response = evaluation.result
+    assert response.answers["q1"].choice == "A"
+    assert response.answers["q2"].noul == pytest.approx(0.8807970779)
     assert response.usage.input_tokens == 12
     assert response.usage.output_tokens == 0
+    assert evaluation.diagnostics["fields"]["q1"]["max_probability"] < 0.8
+    assert concentration([0.5, 0.5]) == 0
+    assert concentration([1.0, 0.0]) == 1

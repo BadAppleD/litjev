@@ -1,85 +1,102 @@
-from __future__ import annotations
+"""Canonical Jev questions, shared by HTTP, Python and prompt compilation."""
 
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Any, Literal
+from collections.abc import Iterator, Mapping
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 MAX_CHOICES = 255
-BOOLEAN_CHOICES = ("true", "false")
-FieldType = Literal["enum", "boolean"]
+Content = str | dict[str, JsonValue] | list[JsonValue] | None
+State = str | dict[str, JsonValue] | list[JsonValue]
 
 
-@dataclass(frozen=True, slots=True)
-class DecisionField:
-    name: str
-    field_type: FieldType
-    description: str
-    choices: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not self.name.strip():
-            raise ValueError("Field name must not be empty")
-        if not self.description.strip():
-            raise ValueError(f"Field '{self.name}' must have a description")
-        if not self.choices:
-            raise ValueError(f"Field '{self.name}' must define at least one choice")
-        if len(self.choices) > MAX_CHOICES:
-            raise ValueError(f"Field '{self.name}' exceeds the 255-choice limit")
-        if len(set(self.choices)) != len(self.choices):
-            raise ValueError(f"Field '{self.name}' choices must be unique")
-        if any(not choice for choice in self.choices):
-            raise ValueError(f"Field '{self.name}' choices must not be empty")
-
-    @classmethod
-    def enum(
-        cls,
-        name: str,
-        description: str,
-        choices: Sequence[str],
-    ) -> DecisionField:
-        return cls(name, "enum", description, tuple(str(choice) for choice in choices))
-
-    @classmethod
-    def boolean(cls, name: str, description: str) -> DecisionField:
-        return cls(name, "boolean", description, BOOLEAN_CHOICES)
+class QuestionBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True, allow_inf_nan=False)
+    instructions: Content = None
 
 
-class DecisionSchema(Mapping[str, DecisionField]):
-    def __init__(self, fields: Mapping[str, DecisionField]) -> None:
-        if not fields:
-            raise ValueError("Schema must contain at least one field")
-        if any(name != field.name for name, field in fields.items()):
-            raise ValueError("Schema keys must match field names")
-        self._fields = MappingProxyType(dict(fields))
-
-    @classmethod
-    def from_mapping(cls, schema: Mapping[str, Mapping[str, Any]]) -> DecisionSchema:
-        fields: dict[str, DecisionField] = {}
-        for name, spec in schema.items():
-            field_type = str(spec.get("type", "enum")).lower()
-            description = str(spec.get("description", ""))
-            if field_type == "boolean":
-                field = DecisionField.boolean(name, description)
-            elif field_type in {"enum", "choice", "selection"}:
-                choices = spec.get("choices")
-                if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)):
-                    raise ValueError(f"Enum field '{name}' must provide a choices array")
-                field = DecisionField.enum(name, description, choices)
-            else:
-                raise ValueError(f"Unsupported field type '{field_type}'")
-            fields[name] = field
-        return cls(fields)
+class Choice(QuestionBase):
+    type: Literal["choice"] = "choice"
+    criteria: dict[str, Content] = Field(min_length=1, max_length=MAX_CHOICES)
 
     @property
-    def names(self) -> tuple[str, ...]:
-        return tuple(self._fields)
+    def choices(self):
+        return tuple(self.criteria)
 
-    def __getitem__(self, name: str) -> DecisionField:
-        return self._fields[name]
+    @property
+    def descriptions(self):
+        return tuple(self.criteria.values())
+
+
+class Score(QuestionBase):
+    type: Literal["score"] = "score"
+    criteria: list[Content] = Field(min_length=2, max_length=10)
+
+    @property
+    def choices(self):
+        return tuple(str(i) for i in range(len(self.criteria)))
+
+    @property
+    def descriptions(self):
+        return tuple(self.criteria)
+
+
+class Noul(QuestionBase):
+    type: Literal["noul"] = "noul"
+    criteria: dict[Literal["true", "false"], Content] | None = None
+
+    @property
+    def choices(self):
+        return ("false", "true")
+
+    @property
+    def descriptions(self):
+        return tuple((self.criteria or {}).get(key) for key in self.choices)
+
+
+Question = Annotated[Choice | Score | Noul, Field(discriminator="type")]
+QUESTION_ADAPTER = TypeAdapter(Question)
+
+
+class DecisionSchema(Mapping[str, Question]):
+    """Ids are bookkeeping only and must never enter model prompts."""
+
+    def __init__(self, questions: Mapping[str, Question]):
+        if not questions:
+            raise ValueError("Questions must contain at least one question")
+        self._questions = {
+            key: QUESTION_ADAPTER.validate_python(value).model_copy(deep=True)
+            for key, value in questions.items()
+        }
+        if any(not isinstance(key, str) for key in self._questions):
+            raise ValueError("Question IDs must be strings")
+
+    @classmethod
+    def from_mapping(cls, questions):
+        return cls(questions)
+
+    def to_mapping(self):
+        return {key: value.model_dump() for key, value in self.items()}
+
+    @property
+    def names(self):
+        return tuple(self._questions)
+
+    def __getitem__(self, key):
+        return self._questions[key]
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._fields)
+        return iter(self._questions)
 
-    def __len__(self) -> int:
-        return len(self._fields)
+    def __len__(self):
+        return len(self._questions)
+
+
+class SystemOneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    model: str = Field(min_length=1)
+    state: State
+    questions: dict[str, Question] = Field(min_length=1)
+
+    def to_schema(self):
+        return DecisionSchema(self.questions)

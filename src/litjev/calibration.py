@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from litjev.slots import SLOT_FORMAT
+
 LOG_TEMPERATURE_MIN = -5.0
 LOG_TEMPERATURE_MAX = 5.0
 GOLDEN_RATIO = (math.sqrt(5.0) - 1.0) / 2.0
@@ -20,13 +22,17 @@ class CalibrationProfile:
     nll_before: float
     nll_after: float
     model_id: str | None = None
+    slot_format: str = SLOT_FORMAT
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n", encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> CalibrationProfile:
-        return cls(**json.loads(Path(path).read_text(encoding="utf-8")))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if data.get("slot_format") != SLOT_FORMAT:
+            raise ValueError("Calibration prompt format changed; refit on current validation logits")
+        return cls(**data)
 
 
 class TemperatureCalibrator:
