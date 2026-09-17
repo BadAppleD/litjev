@@ -23,7 +23,7 @@ def test_public_package_metadata_and_bundled_frontend():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert project["name"] == "litjev"
     assert project["license"] == "Apache-2.0"
-    assert project["license-files"] == ["LICENSE", "NOTICE"]
+    assert project["license-files"] == ["LICENSE", "NOTICE", "THIRD_PARTY_LICENSES/*.txt"]
     assert project["scripts"]["litjev"] == "litjev.cli:serve"
     client = TestClient(create_app(lambda: None))
     assert "LitJev" in client.get("/").text

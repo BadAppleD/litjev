@@ -21,3 +21,7 @@ build/
 *.pth
 models/
 .DS_Store
+runs/
+node_modules/
+*.mp4
+_vizdoom.ini

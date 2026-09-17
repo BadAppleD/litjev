@@ -52,10 +52,19 @@ el("decision-form").addEventListener("submit", async (event) => {
   el("calibration").textContent = "等待本次响应的校准状态。";
   for (const id of ["roundtrip", "decision-time", "setup-time"]) el(id).textContent = "—";
   let schema;
+  let screenshot;
   try {
     schema = JSON.parse(el("schema-input").value);
     if (!schema || Array.isArray(schema) || typeof schema !== "object") throw new Error("Schema 必须是 JSON 对象。");
     if (Object.keys(schema).length < 1 || Object.keys(schema).length > 10) throw new Error("请输入 1–10 个字段。");
+    const file = el("image-input").files[0];
+    if (file) {
+      if (!["image/png", "image/jpeg"].includes(file.type) || file.size > 4_000_000) throw new Error("截图必须是小于 4 MB 的 PNG/JPEG。");
+      screenshot = await new Promise((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("无法读取截图")); reader.readAsDataURL(file);
+      });
+    }
   } catch (error) {
     el("error").textContent = `输入错误：${error.message}`; el("error").hidden = false;
     el("result-status").textContent = "输入无效"; return;
@@ -68,7 +77,7 @@ el("decision-form").addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/v1/calibrated-schema", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({schema, state: el("state-input").value || "Answer each question using its listed options."})
+      body: JSON.stringify({schema, state: el("state-input").value || "Answer each question using its listed options.", ...(screenshot ? {image: screenshot} : {})})
     });
     const text = await response.text();
     el("roundtrip").textContent = seconds((performance.now() - started) / 1000);

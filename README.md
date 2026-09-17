@@ -118,6 +118,28 @@ tokenization, inference-lock waiting, and inference. `total_seconds` sums these
 server phases. Browser round-trip time also includes transport. These are not
 GPU-kernel-only timings.
 
+## Visual games: Doom, chess, and film
+
+Play from screenshots with the same off-the-shelf Qwen weights—no training. The
+ported Doom (seven buttons) and chess (five controller keys) examples share a
+Gymnasium interface and a LitJev policy supporting either local inference or HTTP.
+
+```bash
+# Start the model server, then run a game in another terminal.
+uv run --locked --extra games litjev --model Qwen/Qwen3.8-27B
+uv run --locked --extra games litjev-play chess --max-steps 100 --output runs/chess.json
+uv run --locked --extra games litjev-play doom --max-steps 100 --output runs/doom.json
+uv run --locked --extra games litjev-film runs/chess.json --output runs/chess.html
+```
+
+Open `/film` to inspect traces, or open the standalone HTML. The screenshot playground
+also accepts PNG/JPEG uploads. The image API adds an optional base64 `image` field;
+it never substitutes hidden game state or text descriptions for pixels.
+See [visual games](docs/visual-games.md) for the complete interface, timing boundaries,
+MP4 export, and limitations. No gameplay quality or real-time performance is promised.
+The examples are adapted from [jevlike](https://github.com/vinnylarouge/jevlike), with
+[MIT attribution retained](THIRD_PARTY_NOTICES.md).
+
 ## Python usage
 
 ```python
@@ -217,7 +239,7 @@ machine paths, hostnames, and dataset text.
 ## Development
 
 ```bash
-uv sync --locked --extra dev
+uv sync --locked --extra dev --extra games
 uv run pytest -q
 uv run ruff check .
 uv build
@@ -234,7 +256,9 @@ proxy before granting remote access.
 
 ## License
 
-[Apache License 2.0](LICENSE) for this repository's original code. Model weights,
+[Apache License 2.0](LICENSE) for this repository's original code. Adapted jevlike
+example files retain their [MIT license](THIRD_PARTY_LICENSES/jevlike-MIT.txt);
+see [third-party notices](THIRD_PARTY_NOTICES.md). Model weights,
 datasets, and third-party dependencies retain their own licenses and are not bundled
 here.
 

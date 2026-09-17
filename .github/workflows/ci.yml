@@ -11,8 +11,8 @@ jobs:
         with:
           python-version: '3.11'
       # Tests use tiny random models. Do not install GPU runtimes on a CPU runner.
-      - run: uv sync --locked --extra dev --no-install-package torch
-      - run: uv pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: uv sync --locked --extra dev --extra games --no-install-package torch --no-install-package torchvision
+      - run: uv pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
       - run: uv run --no-sync pytest -q
       - run: uv run --no-sync ruff check .
       - run: uv build

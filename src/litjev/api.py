@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from litjev.schema import DecisionSchema
+from litjev.vision import MAX_BASE64_LENGTH, VisualState, decode_image
 
 
 class McqQuestion(BaseModel):
@@ -48,6 +49,7 @@ class SchemaRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
     schema_def: dict[str, dict] = Field(alias="schema", min_length=1, max_length=10)
+    image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
 
 
 def create_app(engine_factory):
@@ -60,6 +62,10 @@ def create_app(engine_factory):
     @app.get("/", include_in_schema=False)
     def playground():
         return FileResponse(static_dir / "index.html")
+
+    @app.get("/film", include_in_schema=False)
+    def film_playground():
+        return FileResponse(static_dir / "film.html")
 
     def evaluate(state, schema):
         try:
@@ -91,8 +97,12 @@ def create_app(engine_factory):
     def schema_decision(request: SchemaRequest):
         try:
             schema = DecisionSchema.from_mapping(request.schema_def)
+            state = (
+                VisualState(request.state, decode_image(request.image))
+                if request.image is not None else request.state
+            )
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
-        return evaluate(request.state, schema)
+        return evaluate(state, schema)
 
     return app

@@ -6,7 +6,9 @@ from dataclasses import dataclass
 import torch
 
 from litjev.decision import RawFieldScores
-from litjev.slots import SLOT_FORMAT, compile_slots
+from litjev.prompting import build_decision_messages
+from litjev.slots import SLOT_FORMAT, compile_prefix_slots, compile_slots
+from litjev.vision import VisualState, validate_image
 
 
 @dataclass(frozen=True)
@@ -19,11 +21,12 @@ class ModelSettings:
 
 
 class TransformersScorer:
-    def __init__(self, model, tokenizer, max_input_tokens=16384):
+    def __init__(self, model, tokenizer, max_input_tokens=16384, processor=None):
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.max_input_tokens = max_input_tokens
         self.lock = threading.Lock()
+        self.processor = processor
 
     @classmethod
     def load(cls, settings: ModelSettings):
@@ -31,6 +34,7 @@ class TransformersScorer:
             AutoConfig,
             AutoModelForCausalLM,
             AutoModelForImageTextToText,
+            AutoProcessor,
             AutoTokenizer,
         )
 
@@ -45,7 +49,12 @@ class TransformersScorer:
             device_map=settings.device_map,
         )
         tokenizer = AutoTokenizer.from_pretrained(settings.model_id, revision=settings.revision)
-        return cls(model, tokenizer, settings.max_input_tokens)
+        processor = (
+            AutoProcessor.from_pretrained(settings.model_id, revision=settings.revision)
+            if config.model_type == "qwen3_5"
+            else None
+        )
+        return cls(model, tokenizer, settings.max_input_tokens, processor)
 
     def score(self, state, schema):
         with self.lock, torch.inference_mode():
@@ -54,17 +63,44 @@ class TransformersScorer:
     def _compile(self, state, schema):
         return compile_slots(self.tokenizer, state, schema, self.max_input_tokens)
 
-    def _score(self, state, schema):
-        compiled = self._compile(state, schema)
+    def _prepare(self, state, schema):
         device = self.model.get_input_embeddings().weight.device
+        if isinstance(state, VisualState):
+            if self.processor is None or self.model.config.model_type != "qwen3_5":
+                raise ValueError("Image decisions require a Qwen qwen3_5 model and processor")
+            validate_image(state.image)
+            messages = build_decision_messages(state.text, schema)
+            messages[-1]["content"] = [
+                {"type": "text", "text": state.text},
+                {"type": "image", "image": state.image.convert("RGB")},
+            ]
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                enable_thinking=False,
+                return_dict=True,
+                return_tensors="pt",
+            )
+            if "pixel_values" not in inputs or "mm_token_type_ids" not in inputs:
+                raise ValueError("Processor must return pixels and multimodal token types")
+            compiled = compile_prefix_slots(
+                self.tokenizer,
+                schema,
+                inputs["input_ids"][0].tolist(),
+                max_input_tokens=self.max_input_tokens,
+            )
+            return compiled, {key: value.to(device) for key, value in inputs.items()}
+        compiled = self._compile(state, schema)
         prefix = compiled.input_ids[0][: compiled.prefix_length]
         prefix_ids = torch.tensor([prefix], device=device)
-        base = self.model(
-            input_ids=prefix_ids,
-            attention_mask=torch.ones_like(prefix_ids),
-            use_cache=True,
-            logits_to_keep=1,
-        )
+        return compiled, {"input_ids": prefix_ids, "attention_mask": torch.ones_like(prefix_ids)}
+
+    def _score(self, state, schema):
+        compiled, inputs = self._prepare(state, schema)
+        device = inputs["input_ids"].device
+        prefix_length = compiled.prefix_length
+        base = self.model(**inputs, use_cache=True, logits_to_keep=1)
         cache = base.past_key_values
         reorder = getattr(cache, "reorder_cache", None)
         if reorder is None:
@@ -83,16 +119,24 @@ class TransformersScorer:
         suffix_mask = torch.arange(width, device=device)[None, :] < lengths[:, None]
         mask = torch.cat(
             [
-                torch.ones((len(schema), len(prefix)), device=device, dtype=torch.long),
+                torch.ones((len(schema), prefix_length), device=device, dtype=torch.long),
                 suffix_mask.long(),
             ],
             dim=1,
         )
-        positions = torch.arange(len(prefix), len(prefix) + width, device=device)
+        positions = torch.arange(prefix_length, prefix_length + width, device=device)
+        positions = positions[None, :].expand(len(schema), -1)
+        if isinstance(state, VisualState):
+            # Image patches consume sequence slots but have 3-D rotary coordinates.
+            # Continue after the image prefix's M-RoPE extent, not its token count.
+            delta = self.model.model.rope_deltas
+            if delta is None or delta.shape[0] != 1:
+                raise RuntimeError("Missing single-image-prefix M-RoPE state")
+            positions = (positions + delta.to(device))[None, :, :].expand(3, -1, -1)
         output = self.model(
             input_ids=ids,
             attention_mask=mask,
-            position_ids=positions[None, :].expand(len(schema), -1),
+            position_ids=positions,
             past_key_values=cache,
             use_cache=True,
         )
@@ -104,7 +148,7 @@ class TransformersScorer:
                 .float()
                 .cpu()
                 .numpy(),
-                len(prefix) + sum(map(len, suffixes)),
+                prefix_length + sum(map(len, suffixes)),
                 {
                     "method": "two_forward_cached_branches",
                     "slot_format": SLOT_FORMAT,
@@ -119,6 +163,13 @@ class TransformersScorer:
                     "absolute_position": compiled.positions[i],
                     "candidate_labels": list(schema[name].choices),
                     "candidate_token_ids": compiled.candidates[i],
+                    "observation_modality": "image" if isinstance(state, VisualState) else "text",
+                    "image_grid_thw": inputs["image_grid_thw"].tolist()
+                    if "image_grid_thw" in inputs
+                    else None,
+                    "readout_rope_positions": positions[:, i, len(suffixes[i]) - 1].tolist()
+                    if positions.ndim == 3
+                    else None,
                 },
             )
             for i, name in enumerate(schema.names)

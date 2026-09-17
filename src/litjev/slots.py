@@ -27,6 +27,11 @@ def compile_slots(tokenizer, state, schema, max_input_tokens=16384):
         enable_thinking=False,
     )
     prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+    return compile_prefix_slots(tokenizer, schema, prefix_ids, prefix, max_input_tokens)
+
+
+def compile_prefix_slots(tokenizer, schema, prefix_ids, prefix="", max_input_tokens=16384):
+    """Share label-boundary checks between text and processor-expanded image prefixes."""
     prefix_length = len(prefix_ids)
     rows = []
     positions, candidates, texts, slot_ids = [], [], [], []
