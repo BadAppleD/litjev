@@ -42,18 +42,28 @@ test('same film renderer supports live random data, pause and reset', async () =
     const page = await browser.newPage();
     const errors=[];page.on('pageerror', e=>errors.push(e.message));
     const html=(await readFile('../../src/litjev/static/film.html','utf8')).replace('"__LITJEV_LIVE__"','true');
-    let step=0,episode=1;
+    let step=0,episode=1,running=false,version=0;
+    await page.addInitScript(()=>{window.EventSource=class {
+      constructor(){this.timer=setInterval(async()=>{const r=await fetch('/state');this.onmessage?.({data:await r.text()})},30)}
+      close(){clearInterval(this.timer)}
+    }});
     await page.route('http://live.test/**',async route=>{
       const p=new URL(route.request().url()).pathname;
       if(p==='/')return route.fulfill({body:html,contentType:'text/html'});
-      if(p==='/step')step++;
+      if(p==='/step')throw Error('Browser must not advance the game');
+      if(p==='/control')running=route.request().postDataJSON().running??running;
+      if(p==='/state'&&running)step++;
       if(p==='/reset'){step=0;episode++}
-      return route.fulfill({json:{frame:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGioAAAAASUVORK5CYII=',policy:'uniform_random',actions:['left','attack'],probabilities:[.5,.5],episode,step,action:step?'attack':null,reward:0,total_reward:0,done:false,step_ms:2}});
+      return route.fulfill({json:{version:++version,running,fps:9,history:step?[{episode,step,action:'attack',step_ms:2}]:[],frame:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGioAAAAASUVORK5CYII=',policy:'uniform_random',actions:['left','attack'],probabilities:[.5,.5],episode,step,action:step?'attack':null,reward:0,total_reward:0,done:false,step_ms:2}});
     });
     await page.goto('http://live.test/');
+    await page.waitForFunction(()=>!document.querySelector('#play').disabled);
+    await page.locator('#play').click();
     await page.waitForFunction(()=>document.querySelector('#action').textContent==='attack');
     assert.equal(await page.locator('.prob').count(),2);
     assert.match(await page.locator('#status').textContent(),/Uniform random · 0 model forwards/);
+    assert.equal(await page.locator('#timeline span').count(),1);
+    assert.match(await page.locator('#latency-mean').textContent(),/Mean 2.00 ms/);
     await page.locator('#play').click();
     await page.waitForTimeout(250);
     const stopped=step;await page.waitForTimeout(250);assert.equal(step,stopped);

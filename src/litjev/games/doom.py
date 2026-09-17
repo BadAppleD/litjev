@@ -6,6 +6,7 @@
 """Seven-button ViZDoom adapter with deterministic seeds and bounded episodes."""
 
 from pathlib import Path
+from uuid import uuid4
 
 import vizdoom as vzd
 
@@ -49,6 +50,7 @@ class DoomButtonsEnv(PixelEnv):
         render_mode="rgb_array",
         scenario="deadly_corridor",
         resolution="640x480",
+        recording_dir=None,
     ):
         if scenario not in {"deadly_corridor", "defend_the_center"}:
             raise ValueError("Unsupported Doom scenario")
@@ -58,6 +60,10 @@ class DoomButtonsEnv(PixelEnv):
         super().__init__(DOOM_ACTIONS, shape, max_steps, render_mode)
         self.scenario = scenario
         self.game = None
+        # Separate sessions never overwrite one another's native demos.
+        self.recording_dir = Path(recording_dir) / uuid4().hex if recording_dir else None
+        self.recording_episode = 0
+        self.recording_path = None
 
     def reset(self, *, seed=None, options=None):
         if options:
@@ -76,7 +82,21 @@ class DoomButtonsEnv(PixelEnv):
             game.set_depth_buffer_enabled(False)
             game.set_seed(int(self.np_random.integers(0, 2**31 - 1)))
             game.init()
-            game.new_episode()
+            if self.recording_dir is None:
+                game.new_episode()
+            else:
+                self.recording_dir.mkdir(parents=True, exist_ok=True)
+                self.recording_episode += 1
+                self.recording_path = (
+                    self.recording_dir / f"episode-{self.recording_episode:04d}.lmp"
+                )
+                # ViZDoom's native command path can hang on long demo filenames.
+                # A short relative --record directory avoids this engine limitation.
+                if len(str(self.recording_path).encode()) > 120:
+                    raise ValueError(
+                        "Native demo path is too long; use a short relative recording directory"
+                    )
+                game.new_episode(str(self.recording_path))
             self.frame = game.get_state().screen_buffer.copy()
         except Exception:
             self.close()

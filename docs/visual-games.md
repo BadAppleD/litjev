@@ -97,9 +97,26 @@ For a live Doom preview without any model or GPU inference:
 uv run --extra games python -m litjev.games.preview --port 8012
 ```
 
-Open `http://127.0.0.1:8012/`. Seven actions have equal probability. The browser
-advances the real environment, shows action/reward/step timing, and offers pause,
-reset and speed controls. Episodes restart automatically; hidden tabs stop stepping.
+Open `http://127.0.0.1:8012/` and press Play. Seven actions have equal probability.
+A single background worker advances the environment; browsers subscribe through
+SSE and never step it. Pause/reset/speed controls affect the shared session.
+Episodes restart automatically. The worker continues when tabs are hidden or closed;
+use Pause to stop it. Slow/disconnected viewers receive the latest state on reconnect,
+not a lossless frame stream. Only 90 step summaries and the latest screenshot are
+retained; the page shows a latency curve and the latest 48 actions.
+
+For native ViZDoom recordings, add `--record runs/doom-demos`. Each process creates
+a unique run subdirectory with one `.lmp` per episode; existing demos are never
+overwritten. Files finalize when an episode ends or the server closes. Use short
+relative paths (the native engine cannot reliably handle long demo paths).
+Native demos are distinct from the LitJev JSON traces used by `litjev-film`.
+
+These session/SSE, bounded timeline/latency and native-recording features adapt the
+useful parts of [PR #2](https://github.com/zhengxuyu/litjev/pull/2) by xk into PR #4.
+The symbolic health/ammo/actor-state policy, old enum schema and separate Doom page
+from PR #2 are intentionally not imported: screenshots/Gym and the canonical Jev
+schema remain the only model integration path.
+
 This local preview is a shared single environment, not a multi-user model service.
 Live preview and recorded replay use the same ported `film.html` layout and decision
 renderer; random mode labels its uniform probabilities and does not fabricate logits.
