@@ -77,20 +77,30 @@ class RecordingClient:
 
     def decide(self, state, schema, image):
         self.calls.append((state, schema, image.copy()))
-        labels = schema["action"]["choices"]
+        labels = list(schema["action"]["criteria"])
         return {
-            "model": "fake",
-            "answers": {
-                "action": {
-                    "value": labels[0],
-                    "gamma": 1.0,
-                    "probabilities": {label: float(i == 0) for i, label in enumerate(labels)},
-                    "logits": list(range(len(labels))),
-                    "provenance": {"module": "lm_head"},
-                }
+            "result": {
+                "model": "fake",
+                "answers": {
+                    "action": {
+                        "type": "choice",
+                        "choice": labels[0],
+                        "confidence": 1.0,
+                        "probabilities": {label: float(i == 0) for i, label in enumerate(labels)},
+                    }
+                },
+                "usage": {"output_tokens": 0, "input_tokens": 42},
             },
-            "usage": {"output_tokens": 0, "forward_calls": 2},
-            "calibration_fitted": False,
+            "diagnostics": {
+                "calibration_fitted": False,
+                "forward_calls": 2,
+                "fields": {
+                    "action": {
+                        "logits": list(range(len(labels))),
+                        "provenance": {"module": "lm_head"},
+                    }
+                },
+            },
         }
 
 
@@ -116,6 +126,9 @@ def test_same_policy_and_trace_for_both_environments(tmp_path):
 def test_policy_rejects_unknown_answer_and_wrong_probability_shape():
     client = RecordingClient()
     policy = LitJevPolicy(client, ("left", "right"), "Choose a key.")
-    client.decide = lambda *a: {"answers": {"action": {"value": "invented"}}}
+    client.decide = lambda *a: {
+        "result": {"answers": {"action": {"choice": "invented"}}},
+        "diagnostics": {},
+    }
     with pytest.raises(ValueError):
         policy.decide(np.zeros((8, 8, 3), np.uint8))

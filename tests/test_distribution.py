@@ -6,17 +6,19 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from litjev.api import SchemaRequest, create_app
-from litjev.schema import DecisionSchema
+from litjev.api import create_app
+from litjev.schema import SystemOneRequest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_readme_request_is_a_valid_schema():
-    request = SchemaRequest.model_validate_json((ROOT / "examples/request.json").read_text())
-    schema = DecisionSchema.from_mapping(request.schema_def)
-    assert schema.names == ("math", "planet")
-    assert len(schema["math"].choices) == 3
+    request = SystemOneRequest.model_validate_json((ROOT / "examples/request.json").read_text())
+    schema = request.to_schema()
+    assert schema.names == tuple(f"q{i}" for i in range(1, 11))
+    assert len(schema["q1"].choices) == 3
+    client = TestClient(create_app(lambda: None))
+    assert client.get("/example").json() == request.model_dump()
 
 
 def test_public_package_metadata_and_bundled_frontend():

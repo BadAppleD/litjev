@@ -1,9 +1,13 @@
+"""Typed answers are assembled from logits, not generated text."""
+
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 
 from litjev.scoring import calibrated_distribution
+
+CONFIDENCE_METHOD = "normalized_gini_concentration_v1"
 
 
 @dataclass(frozen=True)
@@ -19,28 +23,53 @@ class LogitProvider(Protocol):
 
 
 @dataclass(frozen=True)
-class DecisionAnswer:
-    field_type: str
-    value: str | bool
+class ChoiceAnswer:
+    type: Literal["choice"]
+    choice: str
     probabilities: dict[str, float]
-    gamma: float
-    logits: tuple[float, ...] = ()
-    provenance: dict = field(default_factory=dict)
+    confidence: float
+
+
+@dataclass(frozen=True)
+class ScoreAnswer:
+    type: Literal["score"]
+    score: float
+    legend: dict
+    probabilities: dict[str, float]
+    confidence: float
+
+
+@dataclass(frozen=True)
+class NoulAnswer:
+    type: Literal["noul"]
+    noul: float
 
 
 @dataclass(frozen=True)
 class Usage:
     input_tokens: int
     output_tokens: int = 0
-    forward_calls: int = 2
 
 
 @dataclass(frozen=True)
 class DecisionResponse:
     model: str
-    answers: dict[str, DecisionAnswer]
+    answers: dict[str, ChoiceAnswer | ScoreAnswer | NoulAnswer]
     usage: Usage
-    calibration_fitted: bool = False
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    result: DecisionResponse
+    diagnostics: dict
+
+
+def concentration(probabilities):
+    """LitJev statistic, not a reproduction of Jev's unpublished formula."""
+    count = len(probabilities)
+    if count == 1:
+        return 1.0
+    return float(np.clip((count * sum(p * p for p in probabilities) - 1) / (count - 1), 0, 1))
 
 
 class SchemaDecisionEngine:
@@ -53,27 +82,49 @@ class SchemaDecisionEngine:
         self.calibration_fitted = calibration_fitted
 
     def decide(self, state, schema):
+        return self.evaluate(state, schema).result
+
+    def evaluate(self, state, schema):
         scores = self.provider.score(state, schema)
         if tuple(row.name for row in scores) != schema.names:
             raise RuntimeError("Scorer returned mismatched fields")
-        answers = {}
+        answers, fields = {}, {}
         for row in scores:
-            field = schema[row.name]
-            if len(row.logits) != len(field.choices):
+            question = schema[row.name]
+            if len(row.logits) != len(question.choices):
                 raise RuntimeError("Scorer returned mismatched candidates")
             distribution = calibrated_distribution(
-                row.logits, list(range(len(field.choices))), self.temperature
+                row.logits, list(range(len(question.choices))), self.temperature
             )
-            selected = field.choices[distribution.winner_index]
-            value = selected == "true" if field.field_type == "boolean" else selected
-            answers[row.name] = DecisionAnswer(
-                field.field_type,
-                value,
-                dict(zip(field.choices, distribution.probabilities, strict=True)),
-                distribution.winner_probability,
-                tuple(float(value) for value in row.logits),
-                {**row.provenance, "temperature": self.temperature},
-            )
-        return DecisionResponse(
-            self.model_id, answers, Usage(scores[0].input_tokens), self.calibration_fitted
+            probabilities = dict(zip(question.choices, distribution.probabilities, strict=True))
+            confidence = concentration(distribution.probabilities)
+            if question.type == "noul":
+                answer = NoulAnswer("noul", probabilities["true"])
+            elif question.type == "score":
+                answer = ScoreAnswer(
+                    "score",
+                    sum(int(k) * p for k, p in probabilities.items()),
+                    dict(zip(question.choices, question.descriptions, strict=True)),
+                    probabilities,
+                    confidence,
+                )
+            else:
+                answer = ChoiceAnswer(
+                    "choice", question.choices[distribution.winner_index], probabilities, confidence
+                )
+            answers[row.name] = answer
+            fields[row.name] = {
+                "logits": tuple(float(value) for value in row.logits),
+                "probabilities": probabilities,
+                "max_probability": distribution.winner_probability,
+                "provenance": {**row.provenance, "temperature": self.temperature},
+            }
+        return Evaluation(
+            DecisionResponse(self.model_id, answers, Usage(scores[0].input_tokens)),
+            {
+                "fields": fields,
+                "forward_calls": 2,
+                "calibration_fitted": self.calibration_fitted,
+                "confidence_method": CONFIDENCE_METHOD,
+            },
         )

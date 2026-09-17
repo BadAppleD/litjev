@@ -10,7 +10,7 @@ from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 from litjev.api import create_app
 from litjev.backend import TransformersScorer
 from litjev.decision import SchemaDecisionEngine
-from litjev.schema import DecisionField, DecisionSchema
+from litjev.schema import Choice, DecisionSchema
 from litjev.vision import VisualState, decode_image, encode_image
 
 
@@ -76,7 +76,10 @@ def test_image_two_forwards_match_full_input_and_pixels_affect_logits():
     model = tiny_visual_model()
     scorer = TransformersScorer(model, ImageTokenizer(), processor=TinyProcessor())
     schema = DecisionSchema(
-        {name: DecisionField.enum(name, "Pick", ["A", "B"]) for name in ["a", "longer"]}
+        {
+            name: Choice(instructions=f"Pick {name}", criteria={"A": None, "B": None})
+            for name in ["a", "longer"]
+        }
     )
     state = VisualState("Look at the screen", Image.new("RGB", (8, 8), "white"))
     calls, vision_calls = [], []
@@ -115,17 +118,21 @@ def test_image_api_and_validation_happen_before_model_load():
     seen = []
 
     class RecordingEngine(FakeEngine):
-        def decide(self, state, schema):
+        def evaluate(self, state, schema):
             seen.append(state)
-            return super().decide(state, schema)
+            return super().evaluate(state, schema)
 
     client = TestClient(create_app(lambda: RecordingEngine()))
     payload = {
         "state": "Look",
-        "schema": {"a": {"type": "enum", "description": "Pick", "choices": ["A", "B"]}},
+        "model": "litjev",
+        "questions": {
+            "a": {"type": "choice", "instructions": "Pick", "criteria": {"A": None, "B": None}}
+        },
         "image": encode_image(np.zeros((8, 8, 3), np.uint8)),
     }
-    assert client.post("/v1/calibrated-schema", json=payload).status_code == 200
+    assert client.post("/v1/systemone/debug", json=payload).status_code == 200
+    assert client.post("/v1/systemone", json=payload).status_code == 422
     assert isinstance(seen[0], VisualState)
     assert seen[0].image.size == (8, 8)
     for invalid in [
@@ -134,7 +141,7 @@ def test_image_api_and_validation_happen_before_model_load():
         "data:image/svg+xml;base64,AAAA",
     ]:
         payload["image"] = invalid
-        assert client.post("/v1/calibrated-schema", json=payload).status_code == 422
+        assert client.post("/v1/systemone/debug", json=payload).status_code == 422
     assert len(seen) == 1
 
 

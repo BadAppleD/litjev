@@ -83,19 +83,23 @@ instruction. The agent does not receive FEN, a legal-move list, the opponent's c
 or a direct move action. Doom supplies no object labels, enemy coordinates, depth,
 or telemetry to the policy. Environment `info` is for logging, not inference.
 
-`LitJevPolicy` also works with another RGB Gymnasium environment when given 2–26
+`LitJevPolicy` also works with another RGB Gymnasium environment when given 2–255
 unique textual action descriptions matching its `Discrete` action indices. It maps
-these descriptions to A–Z internally and maps the selected label back to an integer.
+these names to Choice criteria keys. The shared compiler uses internal letter-code tokens;
+the policy maps the returned original key back to an integer action.
 It does not support continuous actions or change the environment's action semantics.
 
 ## Image API and readout
 
-`POST /v1/calibrated-schema` accepts an optional `image` field containing a PNG/JPEG
+`POST /v1/systemone/debug` accepts `{model, state, questions}` plus an optional
+`image` field containing a PNG/JPEG
 data URL or raw base64. It never fetches image URLs or server-side paths. Images are
-limited to 4 MB encoded bytes and 1,048,576 pixels. Existing text requests are unchanged.
+limited to 4 MB encoded bytes and 1,048,576 pixels. The response is `{result, diagnostics}`.
+`result` has the standard Jev response shape; logits, provenance and timings are in
+`diagnostics`. The standard `/v1/systemone` endpoint rejects the image extension.
 
 The processor builds the image/text prefix. Forward 1 runs Qwen vision and prefix
-prefill; forward 2 reads candidate logits at the final `Answer:` token. Its image
+prefill; forward 2 reads candidate logits after each question's `Answer:` suffix. Its image
 M-RoPE offset is carried into the cached suffix positions. This is two top-level
 model forwards and one vision-tower call, with zero generated answer tokens.
 Provenance includes image grid dimensions and the three readout rotary coordinates.
@@ -142,7 +146,7 @@ No soundtrack is bundled. `runs/` and generated videos are ignored by Git.
 action names, `training=false` and ordered `decisions`. Each decision contains:
 
 - pre-action PNG data URL, episode/step, action name and integer index;
-- logits/probabilities in action order, gamma, calibration status and provenance;
+- logits/probabilities in action order, confidence, calibration status and provenance;
 - observed policy latency, reported forward/output-token counts;
 - post-action reward, cumulative reward, termination, truncation and diagnostic info.
 

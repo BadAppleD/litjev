@@ -162,6 +162,7 @@ class TransformersScorer:
                     "slot_token_ids": compiled.slot_ids[i],
                     "absolute_position": compiled.positions[i],
                     "candidate_labels": list(schema[name].choices),
+                    "candidate_codes": compiled.candidate_codes[i],
                     "candidate_token_ids": compiled.candidates[i],
                     "observation_modality": "image" if isinstance(state, VisualState) else "text",
                     "image_grid_thw": inputs["image_grid_thw"].tolist()
