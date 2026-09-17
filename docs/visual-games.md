@@ -91,6 +91,17 @@ It does not support continuous actions or change the environment's action semant
 
 ## Image API and readout
 
+For a live Doom preview without any model or GPU inference:
+
+```bash
+uv run --extra games python -m litjev.games.preview --port 8012
+```
+
+Open `http://127.0.0.1:8012/`. Seven actions have equal probability. The browser
+advances the real environment, shows action/reward/step timing, and offers pause,
+reset and speed controls. Episodes restart automatically; hidden tabs stop stepping.
+This local preview is a shared single environment, not a multi-user model service.
+
 `POST /v1/systemone/debug` accepts `{model, state, questions}` plus an optional
 `image` field containing a PNG/JPEG
 data URL or raw base64. It never fetches image URLs or server-side paths. Images are
