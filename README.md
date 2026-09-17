@@ -1,14 +1,21 @@
 # LitJev
 
-**A hypothesis-based reproduction of Jev's decision layer.** Based on public
-information and built with Hugging Face Transformers, LitJev adapts off-the-shelf
-LLMs into typed decision models and serves them through its own API and browser
-playground. It does not connect to the official Jev API.
+**Turn your chosen LLM into a fast decision model, in the spirit of Jev.**
+LitJev adds a typed decision layer to off-the-shelf models using Hugging Face
+Transformers. Define your questions and options, load a supported model, and get
+choices and probability distributions through a ready-to-use API or browser
+playground—without training or generating answer text.
 
-这是我们基于公开信息，对 Jev 决策层的猜想性复现：使用 Hugging Face Transformers，
-将 off-the-shelf 大模型改造成类型安全的决策模型，并提供 LitJev 自身的 API 和交互前端，
-而非接入官方 Jev API。
-这一猜想来自公开信息，不代表 Jev 的真实内部架构；当前首先保证 Qwen 可用。
+**通过 LitJev，把你想用的大模型改造成像 Jev 一样的快速决策模型。**
+基于 Hugging Face Transformers，为现成模型加上类型安全的决策层：定义问题和选项，
+加载受支持的模型，即可通过 API 或交互前端获取选择结果与概率分布，无需训练，也无需生成回答文本。
+当前首先保证 Qwen 可用；其他模型的兼容性与实际速度需分别验证。
+
+This is our hypothesis-based reproduction of Jev's decision layer from public
+information, not a connection to the official Jev API or a claim of matching its
+internals or performance.
+这是我们基于公开信息对 Jev 决策层的猜想性复现，并非接入官方 Jev API，
+也不代表复现了其真实内部架构或达到相同性能。
 
 Evaluate Choice, Score and Noul questions in one request, including ten-question batches. LitJev reads
 candidate scores from the model's output head and builds typed responses in Python:
