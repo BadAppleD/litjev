@@ -40,18 +40,14 @@ downloads and loads the model, which can take several minutes. Use
 `--model /path/to/checkpoint` for a local checkpoint and `--device-map cuda:0` to pin
 a GPU. Not yet published to PyPI; the commands above run this checkout.
 
-## Modules
+## Using the API
 
-- **Decision API** — `POST /v1/systemone` takes a `model / state / questions`
-  request and returns typed `choice`, `score` and `noul` answers, ten questions per
-  request. Interactive docs at `/docs`. See [HTTP API](docs/api.md).
-- **Playground** — browser UI at `/` with probability bars, logits and timings.
-- **Benchmarking** — MMLU-Pro direct-answer scoring plus Doom and chess played from
-  screenshots, with a `/film` replay viewer. See [benchmarking](docs/benchmarking.md).
-- **Calibration** — optional post-hoc temperature fitting. See
-  [how it works](docs/how-it-works.md#calibration).
+LitJev uses **exactly the schema defined in the Jev documentation**: the same
+`POST /v1/systemone` path, the same `model / state / questions` request body, the
+same `choice`, `score` and `noul` question types, and the same `answers` and `usage`
+response. Code written for one can talk to the other by changing the base URL.
 
-## Example request
+Send a request with `curl` (the server must be running):
 
 ```bash
 curl --fail-with-body http://127.0.0.1:8000/v1/systemone \
@@ -59,19 +55,80 @@ curl --fail-with-body http://127.0.0.1:8000/v1/systemone \
   --data-binary @examples/request.json
 ```
 
+The `state` is what the model looks at; each entry in `questions` is one decision
+about that state:
+
 ```json
 {
   "model": "litjev",
-  "state": "Answer each question using its listed options.",
+  "state": "Customer writes: my order arrived broken and I need it replaced today.",
   "questions": {
-    "math": {"type": "choice", "instructions": "What is 2 + 3?",
-             "criteria": {"A": "4", "B": "5", "C": "6"}},
-    "urgency": {"type": "score", "instructions": "How urgent is the state?",
+    "intent": {"type": "choice", "instructions": "What does the customer want?",
+               "criteria": {"refund": "Money back", "replace": "A replacement",
+                            "info": "Just information"}},
+    "urgency": {"type": "score", "instructions": "How urgent is this?",
                 "criteria": ["Not urgent", "Urgent", "Critical"]},
-    "needs_review": {"type": "noul", "instructions": "Does this need human review?"}
+    "escalate": {"type": "noul", "instructions": "Should a human take over?"}
   }
 }
 ```
+
+The response returns one typed answer per question ID:
+
+```json
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "answers": {
+    "intent": {"type": "choice", "choice": "replace",
+               "probabilities": {"refund": 0.12, "replace": 0.85, "info": 0.03},
+               "confidence": 0.71},
+    "urgency": {"type": "score", "score": 1.6,
+                "legend": {"0": "Not urgent", "1": "Urgent", "2": "Critical"},
+                "probabilities": {"0": 0.05, "1": 0.30, "2": 0.65}, "confidence": 0.42},
+    "escalate": {"type": "noul", "noul": 0.78}
+  },
+  "usage": {"input_tokens": 96, "output_tokens": 0}
+}
+```
+
+`choice` returns the winning option key, `score` the probability-weighted level
+index, and `noul` the probability of yes. Values above are illustrative. Up to ten
+questions fit in one request. From Python:
+
+```python
+import requests
+
+response = requests.post("http://127.0.0.1:8000/v1/systemone", json=request_body)
+answers = response.json()["answers"]
+if answers["escalate"]["noul"] > 0.5:
+    hand_off_to_human()
+```
+
+### Switching between LitJev and the Jev API
+
+Because the schema is identical, the same request body works against the hosted
+Jev service. Only three things differ:
+
+| | LitJev (local) | Jev (hosted) |
+| --- | --- | --- |
+| URL | `http://127.0.0.1:8000/v1/systemone` | `https://api.typesafe.ai/v1/systemone` |
+| Auth header | none | `Authorization: Bearer <API_KEY>` |
+| `model` | `litjev` or the loaded checkpoint ID | `jev-latest` |
+
+Point your client at the other URL, set the header and model name, and everything
+else stays the same. Prototype locally on your own GPU, then switch to Jev, or the
+other way round. The numeric probabilities and confidence values will differ
+between the two, since LitJev runs a different model; only the contract is shared.
+
+## Modules
+
+- **Decision API** — `POST /v1/systemone`, described above. Interactive docs at
+  `/docs`, full reference in [HTTP API](docs/api.md).
+- **Playground** — browser UI at `/` with probability bars, logits and timings.
+- **Benchmarking** — MMLU-Pro direct-answer scoring plus Doom and chess played from
+  screenshots, with a `/film` replay viewer. See [benchmarking](docs/benchmarking.md).
+- **Calibration** — optional post-hoc temperature fitting. See
+  [how it works](docs/how-it-works.md#calibration).
 
 ## Documentation
 
