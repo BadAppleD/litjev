@@ -21,7 +21,11 @@ def build_decision_messages(state, schema=None):
     ]
 
 
-def question_suffix(question, codes):
+ANSWER_BOUNDARY = "\nAnswer:"
+
+
+def question_body(question, codes):
+    """The question text shared by the fast readout and the slow thinking path."""
     options = [
         {"code": codes[i], "option": key, "description": description}
         for i, (key, description) in enumerate(
@@ -29,4 +33,8 @@ def question_suffix(question, codes):
         )
     ]
     body = {"type": question.type, "instructions": question.instructions, "options": options}
-    return "Question: " + json.dumps(body, ensure_ascii=False, allow_nan=False) + "\nAnswer:"
+    return "Question: " + json.dumps(body, ensure_ascii=False, allow_nan=False)
+
+
+def question_suffix(question, codes):
+    return question_body(question, codes) + ANSWER_BOUNDARY

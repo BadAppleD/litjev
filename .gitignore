@@ -17,6 +17,8 @@ build/
 *.log
 *.out
 *.safetensors
+*.npz
+decision-head-report.json
 *.pt
 *.pth
 models/

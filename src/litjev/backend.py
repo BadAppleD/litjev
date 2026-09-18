@@ -1,14 +1,21 @@
-"""Two forwards: shared prefix prefill, then independent cached answer branches."""
+"""Two forwards: shared prefix prefill, then independent cached answer branches.
+
+The optional slow path re-runs escalated branches with the backbone's own thinking
+mode and reads the same answer boundary again. The backbone is never modified.
+"""
 
 import threading
 from dataclasses import dataclass
 
 import torch
+from transformers.generation import StoppingCriteria, StoppingCriteriaList
 
 from litjev.decision import RawFieldScores
-from litjev.prompting import build_decision_messages
+from litjev.prompting import ANSWER_BOUNDARY, build_decision_messages, question_body
 from litjev.slots import SLOT_FORMAT, compile_prefix_slots, compile_slots
 from litjev.vision import VisualState, validate_image
+
+THINK_TOKENS = ("<think>", "</think>")
 
 
 @dataclass(frozen=True)
@@ -18,15 +25,41 @@ class ModelSettings:
     device_map: str = "auto"
     dtype: str = "bfloat16"
     max_input_tokens: int = 16384
+    feature_layers: tuple[int, ...] = ()
+
+
+class SuffixStop(StoppingCriteria):
+    """Stop a row once its generated tail equals the closing delimiter."""
+
+    def __init__(self, suffix, prompt_width):
+        self.suffix = suffix
+        self.prompt_width = prompt_width
+
+    def __call__(self, input_ids, scores, **kwargs):
+        generated = input_ids[:, self.prompt_width :]
+        if generated.shape[1] < len(self.suffix):
+            return torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device)
+        tail = torch.tensor(self.suffix, device=input_ids.device)
+        return (generated[:, -len(self.suffix) :] == tail).all(dim=1)
 
 
 class TransformersScorer:
-    def __init__(self, model, tokenizer, max_input_tokens=16384, processor=None):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        max_input_tokens=16384,
+        processor=None,
+        feature_layers=(),
+        think_tokens=THINK_TOKENS,
+    ):
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.max_input_tokens = max_input_tokens
         self.lock = threading.Lock()
         self.processor = processor
+        self.feature_layers = tuple(feature_layers)
+        self.think_tokens = think_tokens
 
     @classmethod
     def load(cls, settings: ModelSettings):
@@ -54,14 +87,45 @@ class TransformersScorer:
             if config.model_type == "qwen3_5"
             else None
         )
-        return cls(model, tokenizer, settings.max_input_tokens, processor)
+        return cls(model, tokenizer, settings.max_input_tokens, processor, settings.feature_layers)
+
+    @property
+    def hidden_size(self):
+        config = getattr(self.model.config, "text_config", self.model.config)
+        return config.hidden_size
 
     def score(self, state, schema):
         with self.lock, torch.inference_mode():
             return self._score(state, schema)
 
+    def think(self, state, schema, names, budget):
+        """Slow path for the named questions: backbone thinking, then the same readout."""
+        with self.lock, torch.inference_mode():
+            return self._think(state, schema, tuple(names), budget)
+
     def _compile(self, state, schema):
         return compile_slots(self.tokenizer, state, schema, self.max_input_tokens)
+
+    def _pad_id(self):
+        pad = self.tokenizer.pad_token_id
+        if pad is None:
+            pad = self.tokenizer.eos_token_id
+        if pad is None:
+            raise ValueError("Tokenizer requires a padding or EOS token")
+        return pad
+
+    def _readout_hidden(self, output, row, position):
+        if not self.feature_layers:
+            return None
+        states = output.hidden_states
+        if states is None:
+            raise RuntimeError("Model did not return hidden states")
+        return (
+            torch.stack([states[layer][row, position] for layer in self.feature_layers])
+            .float()
+            .cpu()
+            .numpy()
+        )
 
     def _prepare(self, state, schema):
         device = self.model.get_input_embeddings().weight.device
@@ -109,11 +173,7 @@ class TransformersScorer:
         reorder(torch.zeros(len(schema), dtype=torch.long, device=device))
         suffixes = compiled.slot_ids
         width = max(map(len, suffixes))
-        pad = self.tokenizer.pad_token_id
-        if pad is None:
-            pad = self.tokenizer.eos_token_id
-        if pad is None:
-            raise ValueError("Tokenizer requires a padding or EOS token")
+        pad = self._pad_id()
         ids = torch.tensor([row + [pad] * (width - len(row)) for row in suffixes], device=device)
         lengths = torch.tensor(list(map(len, suffixes)), device=device)
         suffix_mask = torch.arange(width, device=device)[None, :] < lengths[:, None]
@@ -139,6 +199,7 @@ class TransformersScorer:
             position_ids=positions,
             past_key_values=cache,
             use_cache=True,
+            output_hidden_states=bool(self.feature_layers),
         )
         config = getattr(self.model.config, "text_config", self.model.config)
         return tuple(
@@ -151,6 +212,7 @@ class TransformersScorer:
                 prefix_length + sum(map(len, suffixes)),
                 {
                     "method": "two_forward_cached_branches",
+                    "system": "one",
                     "slot_format": SLOT_FORMAT,
                     "module": "lm_head",
                     "last_decoder_layer_index": config.num_hidden_layers - 1,
@@ -164,6 +226,7 @@ class TransformersScorer:
                     "candidate_labels": list(schema[name].choices),
                     "candidate_codes": compiled.candidate_codes[i],
                     "candidate_token_ids": compiled.candidates[i],
+                    "feature_layers": list(self.feature_layers),
                     "observation_modality": "image" if isinstance(state, VisualState) else "text",
                     "image_grid_thw": inputs["image_grid_thw"].tolist()
                     if "image_grid_thw" in inputs
@@ -172,6 +235,99 @@ class TransformersScorer:
                     if positions.ndim == 3
                     else None,
                 },
+                hidden=self._readout_hidden(output, i, len(suffixes[i]) - 1),
             )
             for i, name in enumerate(schema.names)
         )
+
+    def _think(self, state, schema, names, budget):
+        if isinstance(state, VisualState):
+            raise TypeError("The slow path does not support image states yet")
+        if budget <= 0:
+            raise ValueError("Thinking budget must be positive")
+        unknown = [name for name in names if name not in schema]
+        if unknown or not names:
+            raise ValueError("Slow path names must be non-empty schema question IDs")
+        compiled = self._compile(state, schema)
+        device = self.model.get_input_embeddings().weight.device
+
+        def encode(text):
+            return self.tokenizer.encode(text, add_special_tokens=False)
+
+        open_ids = encode(self.think_tokens[0])
+        close_ids = encode(self.think_tokens[1])
+        tail_ids = encode(self.think_tokens[1] + ANSWER_BOUNDARY)
+        if not open_ids or not close_ids:
+            raise ValueError("Tokenizer cannot encode the thinking delimiters")
+        index = {name: i for i, name in enumerate(schema.names)}
+        prefix = compiled.input_ids[0][: compiled.prefix_length]
+        prompts = []
+        for name in names:
+            i = index[name]
+            body = encode(question_body(schema[name], compiled.candidate_codes[i]) + "\n")
+            prompts.append(prefix + body + open_ids)
+        if max(map(len, prompts)) + budget + len(tail_ids) > self.max_input_tokens:
+            raise ValueError("Thinking budget exceeds the input token limit")
+        pad = self._pad_id()
+        width = max(map(len, prompts))
+        ids = torch.tensor([[pad] * (width - len(row)) + row for row in prompts], device=device)
+        mask = torch.tensor(
+            [[0] * (width - len(row)) + [1] * len(row) for row in prompts], device=device
+        )
+        generated = self.model.generate(
+            input_ids=ids,
+            attention_mask=mask,
+            max_new_tokens=budget,
+            do_sample=False,
+            pad_token_id=pad,
+            stopping_criteria=StoppingCriteriaList([SuffixStop(close_ids, width)]),
+        )
+        eos = self.tokenizer.eos_token_id
+        thoughts, sequences = [], []
+        for row, prompt in zip(generated[:, width:].tolist(), prompts, strict=True):
+            while row and row[-1] in {pad, eos}:
+                row.pop()
+            if len(row) >= len(close_ids) and row[-len(close_ids) :] == close_ids:
+                row = row[: -len(close_ids)]
+            thoughts.append(row)
+            sequences.append(prompt + row + tail_ids)
+        width = max(map(len, sequences))
+        ids = torch.tensor([row + [pad] * (width - len(row)) for row in sequences], device=device)
+        mask = torch.tensor(
+            [[1] * len(row) + [0] * (width - len(row)) for row in sequences], device=device
+        )
+        output = self.model(
+            input_ids=ids,
+            attention_mask=mask,
+            use_cache=False,
+            output_hidden_states=bool(self.feature_layers),
+        )
+        decode = getattr(self.tokenizer, "decode", None)
+        results = []
+        for j, name in enumerate(names):
+            i = index[name]
+            position = len(sequences[j]) - 1
+            results.append(
+                RawFieldScores(
+                    name,
+                    output.logits[j, position, compiled.candidates[i]].float().cpu().numpy(),
+                    len(sequences[j]),
+                    {
+                        "method": "slow_thinking_full_input",
+                        "system": "two",
+                        "slot_format": SLOT_FORMAT,
+                        "module": "lm_head",
+                        "selected_logit_index": position,
+                        "candidate_labels": list(schema[name].choices),
+                        "candidate_codes": compiled.candidate_codes[i],
+                        "candidate_token_ids": compiled.candidates[i],
+                        "thinking_tokens": len(thoughts[j]),
+                        "thinking_text": decode(thoughts[j]) if decode else None,
+                        "budget": budget,
+                        "feature_layers": list(self.feature_layers),
+                    },
+                    hidden=self._readout_hidden(output, j, position),
+                    generated_tokens=len(thoughts[j]),
+                )
+            )
+        return tuple(results)
