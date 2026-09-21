@@ -108,26 +108,6 @@ bottleneck overfit at this data size and scored below the stats-only floor; sing
 selection chose them anyway, which is why selection is now K-fold. Numbers are from one
 seed and one checkpoint; treat them as a pipeline check, not a benchmark result.
 
-## Training objective: cross-entropy or CDPO
-
-`litjev-train-head --objective cdpo` trains the same head with **Calibrated Decision
-Policy Optimisation** instead of four-class cross-entropy. The head's gain
-`g = P(fast✗,slow✓) − P(fast✓,slow✗)` defines a soft routing policy
-`σ((g − λ)/T)`; because both outcomes are recorded for every question, the expected
-routed reward `π · (a_slow − a_fast − λ)` is exact and differentiable, so there is no
-sampling and no critic. `λ` is drawn per example from `[−0.2, 0.5]` so the head stays
-valid for any request-time `λ`. A Brier term keeps `confidence = P(fast✓)` calibrated
-and a small cross-entropy anchor keeps the four-class output meaningful. Both objectives
-are always trained and reported (`by_objective` in the report); the flag picks which is
-saved.
-
-On the 1500-question set, same features and split, five training seeds: routing AUROC
-0.696 ± 0.015 (cross-entropy) versus 0.743 ± 0.010 (CDPO), ECE 0.088 versus 0.057,
-and 0.6 to 1.2 accuracy points more at 50 to 80 % escalation. Seed 0 with CDPO reaches
-the always-thinking accuracy (0.740) at 72 % escalation. `--train-seed` varies head
-initialisation while keeping the category split fixed; `--candidate layer_24_pca64`
-skips selection so objectives can be compared on identical features.
-
 ## What to expect and what is not claimed
 
 - Thinking is autoregressive. A 512-token budget on 27B under Transformers is tens of

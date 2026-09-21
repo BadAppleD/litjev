@@ -180,45 +180,6 @@ def outcome_labels(fast_correct, slow_correct):
     return np.where(fast, np.where(slow, 0, 1), np.where(slow, 2, 3)).astype(np.int64)
 
 
-@dataclass(frozen=True)
-class CDPOConfig:
-    """Calibrated Decision Policy Optimisation.
-
-    The head's escalation gain g = o[2] - o[1] defines a soft routing policy
-    pi(escalate | x, lambda) = sigmoid((g - lambda) / temperature). Both outcomes are
-    known for every training question, so the expected routed reward
-    E_pi[ a_slow - a_fast - lambda ] is exact and differentiable: no sampling, no
-    critic. lambda is drawn per example from `lambda_range` so g stays a usable gain
-    estimate for any request-time lambda. A Brier term keeps c = P(fast correct)
-    calibrated, and a small cross-entropy anchor keeps the four-class output meaningful.
-    """
-
-    lambda_range: tuple[float, float] = (-0.2, 0.5)
-    temperature: float = 0.05
-    calibration_weight: float = 1.0
-    anchor_weight: float = 0.25
-
-
-def cdpo_loss(logits, labels, class_weight, config, generator):
-    """Policy term + calibration term + supervised anchor, for one batch."""
-    outcome = torch.softmax(logits, dim=-1)
-    fast_correct = (labels <= 1).float()
-    slow_correct = ((labels == 0) | (labels == 2)).float()
-    delta = slow_correct - fast_correct  # realised gain from escalating
-    low, high = config.lambda_range
-    lam = torch.rand(len(labels), generator=generator) * (high - low) + low
-    lam = lam.to(logits.device)
-    gain = outcome[:, 2] - outcome[:, 1]
-    policy = torch.sigmoid((gain - lam) / config.temperature)
-    policy_term = -(policy * (delta - lam)).mean()
-    confidence = outcome[:, 0] + outcome[:, 1]
-    calibration_term = ((confidence - fast_correct) ** 2).mean()
-    anchor = nn.functional.cross_entropy(logits, labels, weight=class_weight)
-    return (
-        policy_term + config.calibration_weight * calibration_term + config.anchor_weight * anchor
-    )
-
-
 def train_head(
     metadata,
     features,
@@ -232,19 +193,12 @@ def train_head(
     patience=6,
     seed=0,
     device="cpu",
-    objective="supervised",
-    cdpo=None,
 ):
-    """Train the head with early stopping; the backbone is never touched.
+    """Supervised four-class training with early stopping; the backbone is never touched.
 
-    `objective` is "supervised" (class-weighted cross-entropy on the four outcomes) or
-    "cdpo" (Calibrated Decision Policy Optimisation, see `CDPOConfig`). A slice of the
-    training set is held out for validation; the returned head is the epoch with the
-    lowest validation loss. History rows carry train and validation loss.
+    A slice of the training set is held out for validation; the returned head is the
+    epoch with the lowest validation loss. History rows carry train and validation loss.
     """
-    if objective not in {"supervised", "cdpo"}:
-        raise ValueError("objective must be 'supervised' or 'cdpo'")
-    config = cdpo if cdpo is not None else CDPOConfig()
     torch.manual_seed(seed)
     matrix = torch.as_tensor(np.asarray(features, dtype=np.float32))
     targets = torch.as_tensor(np.asarray(labels, dtype=np.int64))
@@ -261,13 +215,7 @@ def train_head(
     counts = torch.bincount(targets[train_index], minlength=OUTCOME_DIM).float().clamp_min(1)
     class_weight = (counts.sum() / (OUTCOME_DIM * counts)).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    supervised = nn.CrossEntropyLoss(weight=class_weight)
-
-    def loss_fn(logits, batch_labels):
-        if objective == "cdpo":
-            return cdpo_loss(logits, batch_labels, class_weight, config, generator)
-        return supervised(logits, batch_labels)
-
+    loss_fn = nn.CrossEntropyLoss(weight=class_weight)
     history, best_state, best_loss, stale = [], None, float("inf"), 0
     for _ in range(epochs):
         head.train()
