@@ -179,6 +179,12 @@ def collect():
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="Take every k-th question so a small sample spans all categories",
+    )
+    parser.add_argument(
         "--layers",
         default="-1",
         help="hidden_states indices; write --layers=-1,40,48 (the value starts with '-')",
@@ -186,13 +192,13 @@ def collect():
     parser.add_argument("--budget", type=int, default=512, help="Thinking tokens per question")
     parser.add_argument("--output", default="head-records.npz")
     args = parser.parse_args()
-    if args.limit <= 0 or args.offset < 0 or args.budget <= 0:
-        parser.error("--limit and --budget must be positive, --offset non-negative")
+    if args.limit <= 0 or args.offset < 0 or args.budget <= 0 or args.stride <= 0:
+        parser.error("--limit, --budget and --stride must be positive, --offset non-negative")
     layers = parse_feature_layers(args.layers)
     dataset = load_dataset(DATASET_ID, revision=args.dataset_revision, split=args.split)
     questions, labels, skipped = convert_rows(dataset)
     categories = {str(row.get("question_id", "")): str(row.get("category", "")) for row in dataset}
-    questions = questions[args.offset : args.offset + args.limit]
+    questions = questions[args.offset :: args.stride][: args.limit]
     if not questions:
         parser.error("No questions selected")
     settings = ModelSettings(
@@ -217,6 +223,7 @@ def collect():
             "dataset_revision": args.dataset_revision,
             "split": args.split,
             "offset": args.offset,
+            "stride": args.stride,
             "skipped": len(skipped),
         },
     )

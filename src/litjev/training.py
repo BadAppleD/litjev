@@ -22,24 +22,32 @@ from litjev.routing import escalation_gain, fast_confidence
 DEFAULT_LAMBDAS = (-0.2, -0.1, -0.05, 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
 
 
-def holdout_mask(categories, fraction, seed=0):
-    """Deterministic category-level holdout; falls back to per-example when categories are empty."""
-    categories = np.asarray(categories)
-    keys = (
-        categories
-        if categories.size and any(categories)
-        else np.arange(len(categories)).astype(str)
-    )
+def _hash_mask(keys, fraction, seed):
     scores = np.array(
         [
             int(hashlib.sha256(f"{seed}:{key}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
             for key in keys
         ]
     )
-    mask = scores < fraction
+    return scores < fraction
+
+
+def holdout_mask(categories, fraction, seed=0):
+    """Deterministic category-level holdout.
+
+    Returns (mask, level). Level is "category" when whole categories are held out,
+    or "example" when too few categories exist for that to leave both sides populated;
+    the per-example split then measures within-subject generalization only.
+    """
+    categories = np.asarray(categories)
+    if categories.size and any(categories):
+        mask = _hash_mask(categories, fraction, seed)
+        if mask.any() and not mask.all():
+            return mask, "category"
+    mask = _hash_mask(np.arange(len(categories)).astype(str), fraction, seed)
     if mask.all() or not mask.any():
         raise ValueError("Holdout split left one side empty; adjust --holdout-fraction or seed")
-    return mask
+    return mask, "example"
 
 
 def features_for(records, layer_positions):
@@ -73,7 +81,7 @@ def run_training(
     fast = np.asarray(records["fast_correct"], dtype=bool)
     slow = np.asarray(records["slow_correct"], dtype=bool)
     labels = outcome_labels(fast, slow)
-    test = holdout_mask(records["category"], holdout_fraction, seed)
+    test, split_level = holdout_mask(records["category"], holdout_fraction, seed)
     train = ~test
     base = {
         "model_id": metadata["model_id"],
@@ -101,6 +109,8 @@ def run_training(
         "train_count": int(train.sum()),
         "test_count": int(test.sum()),
         "holdout_fraction": holdout_fraction,
+        "split_level": split_level,
+        "categories_seen": sorted({str(c) for c in np.asarray(records["category"])}),
         "held_out_categories": sorted({str(c) for c in np.asarray(records["category"])[test]}),
         "fast_accuracy": float(fast[test].mean()),
         "slow_accuracy": float(slow[test].mean()),

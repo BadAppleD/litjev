@@ -343,7 +343,14 @@ def test_collect_save_load_and_train(tmp_path):
     loaded["fast_correct"] = rng.random(12) < 0.6
     loaded["slow_correct"] = rng.random(12) < 0.7
     head, report = run_training(loaded, meta, holdout_fraction=0.5, epochs=2, probe_epochs=1)
+    assert report["split_level"] == "category"
+    assert report["categories_seen"] == ["law", "math"]
     assert report["chosen_layers"][0] in (-1, 1)
+    # A single-category collection cannot hold out a category; fall back to examples.
+    single = {**loaded, "category": np.array(["law"] * 12)}
+    _, fallback = run_training(single, meta, holdout_fraction=0.5, epochs=1, probe_epochs=1)
+    assert fallback["split_level"] == "example"
+    assert 0 < fallback["test_count"] < 12
     assert len(report["layer_sweep"]) == 2
     assert 0 < report["train_count"] < 12
     assert set(report["head"]) == {"auroc_fast_correct", "auroc_gain_vs_helps", "curve"}
