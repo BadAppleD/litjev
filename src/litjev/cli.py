@@ -191,6 +191,12 @@ def collect():
     )
     parser.add_argument("--budget", type=int, default=512, help="Thinking tokens per question")
     parser.add_argument("--output", default="head-records.npz")
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=5,
+        help="Rewrite the output file every k batches so a timeout keeps what was collected",
+    )
     args = parser.parse_args()
     if args.limit <= 0 or args.offset < 0 or args.budget <= 0 or args.stride <= 0:
         parser.error("--limit, --budget and --stride must be positive, --offset non-negative")
@@ -205,28 +211,27 @@ def collect():
         args.model, args.revision, args.device_map, args.dtype, feature_layers=layers
     )
     scorer = TransformersScorer.load(settings)
+    metadata = {
+        "model_id": args.model,
+        "revision": args.revision,
+        "hidden_size": scorer.hidden_size,
+        "feature_layers": list(layers),
+        "budget": args.budget,
+        "dataset": DATASET_ID,
+        "dataset_revision": args.dataset_revision,
+        "split": args.split,
+        "offset": args.offset,
+        "stride": args.stride,
+        "skipped": len(skipped),
+    }
     records = []
     started = time.perf_counter()
-    for batch, valid_ids in ten_question_batches(questions):
+    for batches, (batch, valid_ids) in enumerate(ten_question_batches(questions), start=1):
         records.extend(collect_batch(scorer, batch, valid_ids, labels, args.budget, categories))
         print(f"{len(records)}/{len(questions)} records, {time.perf_counter() - started:.0f}s")
-    save_records(
-        args.output,
-        records,
-        {
-            "model_id": args.model,
-            "revision": args.revision,
-            "hidden_size": scorer.hidden_size,
-            "feature_layers": list(layers),
-            "budget": args.budget,
-            "dataset": DATASET_ID,
-            "dataset_revision": args.dataset_revision,
-            "split": args.split,
-            "offset": args.offset,
-            "stride": args.stride,
-            "skipped": len(skipped),
-        },
-    )
+        if args.checkpoint_every > 0 and batches % args.checkpoint_every == 0:
+            save_records(args.output, records, {**metadata, "partial": True})
+    save_records(args.output, records, metadata)
     fast = sum(r.fast_correct for r in records) / len(records)
     slow = sum(r.slow_correct for r in records) / len(records)
     print(json.dumps({"records": len(records), "fast_accuracy": fast, "slow_accuracy": slow}))
