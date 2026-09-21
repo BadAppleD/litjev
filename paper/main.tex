@@ -27,7 +27,7 @@
 \newcommand{\gain}{g}
 \newcommand{\method}{LitJev-S2}
 
-\title{Knowing When to Think: A Frozen-Backbone Decision Head\\for Routing Between Fast and Slow Typed Decisions}
+\title{Thinking Fast and Slow:\\A Hybrid Thinking Model with Self-Routing}
 
 % Submissions are anonymous. Uncomment \iclrfinalcopy for the camera-ready version.
 \author{Anonymous authors\\
@@ -46,7 +46,7 @@ System One decision models answer typed questions (a choice among options, a sco
 
 A growing class of deployed language-model workloads are not conversations but decisions: route this ticket, is this claim supported, how urgent is this state, which of these five actions next. Typed decision models such as Jev \citep{typesafe2026jev} serve exactly this shape. The caller supplies a state and a set of typed questions; the model returns, for each question, an option key, a probability distribution over the options, and a confidence, without generating a single answer token. The mechanism is old \citep{hendrycks2017baseline}: prefill the state, append each question and its options, and read the logits of the option codes at an answer boundary. What is new is treating this readout as the product, with a request/response contract that code can consume directly, and the resulting latency and cost, one to two orders of magnitude below generate-then-parse.
 
-The price of the single pass is that the model cannot think. On questions that require multi-step reasoning the fast readout is a guess, and on MMLU-Pro \citep{wang2024mmlupro} a 4B backbone's fast readout is right 54\% of the time while the same backbone with its thinking mode enabled is right 74\% of the time. Always thinking closes the gap but costs a thousand generated tokens per question, which is the cost the fast path exists to avoid. The interesting regime is in between: think only where thinking pays.
+The price of the single pass is that the model cannot think. On questions that require multi-step reasoning the fast readout is a guess, and on MMLU-Pro \citep{wang2024mmlupro} a 4B backbone's fast readout is right 54\% of the time while the same backbone with its thinking mode enabled is right 74\% of the time. Always thinking closes the gap but costs a thousand generated tokens per question, which is the cost the fast path exists to avoid. The interesting regime is in between: think only where thinking pays. This is the division of labour that \citet{kahneman2011thinking} describes between a fast, automatic System~1 and a slow, deliberate System~2, with the added requirement that the hand-off be decided by the system itself.
 
 This paper asks whether the model can make that call itself, in the same forward pass that produces the fast answer, without modifying the backbone. Our answer is a \emph{decision head} (Figure~\ref{fig:arch}): a small multilayer perceptron attached beside \texttt{lm\_head} at the readout position. It consumes the hidden state that the language-model head already reads, plus a few statistics of the fast answer distribution, and predicts a four-way outcome: whether the fast answer is right and whether the slow answer would be right. Escalation follows from a one-line rule, escalate when $P(\fast\ \text{wrong},\ \slow\ \text{right}) - P(\fast\ \text{right},\ \slow\ \text{wrong}) > \lambda$. The threshold $\lambda$ is the per-question price of thinking and is set at request time, so a deployment moves along the cost--accuracy curve without retraining.
 
