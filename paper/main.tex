@@ -26,7 +26,6 @@
 \newcommand{\slow}{\mathrm{slow}}
 \newcommand{\gain}{g}
 \newcommand{\method}{LitJev-S2}
-\newcommand{\cdpo}{CDPO}
 
 \title{Thinking Fast and Slow:\\A Hybrid Thinking Model with Self-Routing}
 
@@ -40,7 +39,7 @@ Paper under double-blind review}
 \maketitle
 
 \begin{abstract}
-System One decision models answer typed questions (a choice among options, a score on a scale, a yes/no) in a single forward pass by reading option logits at an answer boundary instead of generating text. They are fast and cheap, but they cannot reason, and on hard questions they are wrong. We ask whether such a model can decide, at no extra token cost, which questions are worth the price of slow thinking. We attach a small \emph{decision head} beside the language-model head at the readout position of a frozen backbone. The head reads the same hidden state that produces the fast answer and predicts the joint outcome of the fast path and of the backbone's own thinking mode: whether each would be right or wrong. A question is escalated when the predicted accuracy gain from thinking exceeds a cost $\lambda$ chosen at request time. Labels for the head are produced automatically by running both paths once on a labelled set; no human annotation of ``should think'' is needed, and no backbone weight is modified. Because both outcomes are recorded for every question, we can train the head directly for the routed reward: \emph{Calibrated Decision Policy Optimisation} (\cdpo) maximises the exact expected reward of a soft routing policy under a cost drawn at random, with a proper-scoring-rule term that keeps the reported confidence calibrated, and needs no sampling or critic. On MMLU-Pro with a 4B-parameter Qwen backbone, fast-only accuracy is 0.540 and always-thinking accuracy is 0.740 at a mean cost of 994 generated tokens per question. A cross-entropy head reaches 0.717 while thinking on 53\% of questions, recovering 89\% of the gain for 53\% of the cost; the \cdpo{} head reaches always-thinking accuracy at 72\% of the cost, raises routing AUROC from 0.70 to 0.74 across five seeds, and cuts the confidence calibration error by a third. Both beat a router that sees only the fast answer distribution at every escalation rate. The routing signal is carried by an intermediate layer's hidden state passed through a whitened low-rank projection; raw hidden states overfit at this data size.
+System One decision models answer typed questions (a choice among options, a score on a scale, a yes/no) in a single forward pass by reading option logits at an answer boundary instead of generating text. They are fast and cheap, but they cannot reason, and on hard questions they are wrong. We ask whether such a model can decide, at no extra token cost, which questions are worth the price of slow thinking. We attach a small \emph{decision head} beside the language-model head at the readout position of a frozen backbone. The head reads the same hidden state that produces the fast answer and predicts the joint outcome of the fast path and of the backbone's own thinking mode: whether each would be right or wrong. A question is escalated when the predicted accuracy gain from thinking exceeds a cost $\lambda$ chosen at request time. Labels for the head are produced automatically by running both paths once on a labelled set; no human annotation of ``should think'' is needed, and no backbone weight is modified. On MMLU-Pro with a 4B-parameter Qwen backbone, fast-only accuracy is 0.540 and always-thinking accuracy is 0.740 at a mean cost of 994 generated tokens per question. Routing with the decision head reaches 0.717 while thinking on 53\% of questions, recovering 89\% of the accuracy gain for 53\% of the token cost, and beats a router that sees only the fast answer distribution at every escalation rate. The routing signal is carried by an intermediate layer's hidden state passed through a whitened low-rank projection; raw hidden states overfit at this data size.
 \end{abstract}
 
 \section{Introduction}
@@ -57,8 +56,7 @@ We evaluate on MMLU-Pro with Qwen3.5-4B, holding out entire subject categories s
 \begin{itemize}
   \item A frozen-backbone architecture for self-routed fast/slow typed decisions, with a request-time cost knob and an unchanged fast-path contract (Section~\ref{sec:method}).
   \item A self-labelling procedure and a training recipe, grouped cross-validation over subject categories with a whitened low-rank bottleneck on the hidden state, that avoids the overfitting we observed with raw hidden states (Section~\ref{sec:training}).
-  \item \cdpo, a decision-focused objective that trains the head for the exact expected routed reward under a randomly drawn cost, keeps confidence calibrated with a proper scoring rule, and, because both arms are observed for every question, needs no sampling, rollout or critic (Section~\ref{sec:cdpo}).
-  \item Evidence that the routing signal lives in an intermediate layer's hidden state and is not recoverable from the fast answer distribution alone: at matched escalation rates the head beats a distribution-only router by about three accuracy points and recovers 89\% of the always-think gain at 53\% of its cost; with \cdpo{} it matches always-think accuracy at 72\% of the cost and improves routing AUROC and calibration on every seed (Section~\ref{sec:experiments}).
+  \item Evidence that the routing signal lives in an intermediate layer's hidden state and is not recoverable from the fast answer distribution alone: at matched escalation rates the head beats a distribution-only router by about three accuracy points, and recovers 89\% of the always-think gain at 53\% of its cost (Section~\ref{sec:experiments}).
 \end{itemize}
 
 We also report what did not work, including a prompt-template interaction that silently disabled thinking, because these failure modes are likely to recur for anyone building on hybrid-thinking checkpoints.
@@ -73,9 +71,6 @@ Adaptive computation time \citep{graves2016act} and confident early exit \citep{
 
 \paragraph{Model routing.}
 FrugalGPT \citep{chen2023frugalgpt} and RouteLLM \citep{ong2024routellm} route queries between cheap and expensive \emph{models} using a learned router over the query text. We route between two \emph{modes of the same model}, and the router reads the model's own internal state rather than the input, which is what allows it to cost nothing at inference: the state is already computed.
-
-\paragraph{Decision-focused learning.}
-Training a predictor for the downstream decision it feeds rather than for likelihood is the premise of decision-focused or predict-then-optimise learning \citep{elmachtoub2022spo,wilder2019melding}. \cdpo{} is this idea applied to a routing policy with a scalar cost: the loss is the expected reward of a smoothed decision rule, and a calibration term stands in for the likelihood the policy term no longer constrains. Jev's training is described as reinforcement learning with calibrated decisions \citep{typesafe2026jev} but its algorithm is unpublished; \cdpo{} is our own formulation for the frozen-backbone setting, not a reconstruction of it.
 
 \paragraph{Confidence estimation from hidden states.}
 Maximum softmax probability is a strong baseline for detecting misclassification \citep{hendrycks2017baseline}, and selective classification formalises the coverage--accuracy trade-off we plot \citep{geifman2017selective}. Language models carry information about their own correctness in their activations \citep{kadavath2022know,azaria2023internal}, recoverable with linear probes \citep{alain2017probes}. We use the same observation for a different target: not ``is this answer right'' but ``would thinking make it right''. Calibration in the sense of \citet{guo2017calibration} is a by-product: the head's $P(\fast\ \text{right})$ replaces the uncalibrated concentration statistic that the fast path would otherwise report.
@@ -186,46 +181,6 @@ The head is trained by class-weighted cross-entropy on $y_i$ with AdamW \citep{l
 \paragraph{Candidates.}
 $\Theta$ contains a \emph{stats-only} head (no hidden state; this is the floor that $\vh$ must beat to justify its cost), one raw-$\vh$ head per collected layer, and one PCA-bottleneck head per collected layer. The stats-only head is itself a useful artefact: it needs no hidden states at inference and can be served by any implementation of the fast path.
 
-\subsection{Calibrated decision policy optimisation}
-\label{sec:cdpo}
-
-Cross-entropy on the four-way outcome treats the head as a classifier and every question as equally important. The head is used as a \emph{policy}: only its decision at the threshold matters, and questions far from the threshold on either side contribute nothing to routed accuracy. We therefore propose a second objective, \emph{Calibrated Decision Policy Optimisation} (\cdpo), that trains the same head end to end for the quantity the deployment cares about, the expected routed reward at a cost $\lambda$, while keeping its confidence calibrated.
-
-\paragraph{Soft policy.} Given the head's gain estimate $\gain_i$ and a cost $\lambda$, define the stochastic routing policy
-\begin{equation}
-  \pi_\theta(\text{escalate}\mid x_i,\lambda)=\sigma\!\left(\frac{\gain_i(\theta)-\lambda}{T}\right),
-  \label{eq:policy}
-\end{equation}
-a smoothed version of the deterministic rule in Section~\ref{sec:routing} with temperature $T$. Escalating question $i$ yields reward $r_i(\lambda)=\Delta_i-\lambda$ with $\Delta_i=a_i^{\slow}-a_i^{\fast}\in\{-1,0,1\}$; keeping the fast answer yields $0$. Because the collected records contain both $a_i^{\fast}$ and $a_i^{\slow}$, the expected reward of the policy on a question is known exactly:
-\begin{equation}
-  J_i(\theta,\lambda)=\pi_\theta(\text{escalate}\mid x_i,\lambda)\,(\Delta_i-\lambda).
-\end{equation}
-This is a full-information contextual bandit: no rollout, no sampling of actions, no critic, and no variance from a score-function estimator. The gradient of $J$ with respect to $\theta$ passes through the sigmoid and concentrates on questions whose gain estimate is near the threshold, which is where the routed accuracy is decided.
-
-\paragraph{Marginalising the cost.} A policy optimised for one $\lambda$ would leave $\gain$ uncalibrated elsewhere and forfeit the request-time knob. We instead draw $\lambda\sim\mathcal{U}[\lambda_{\min},\lambda_{\max}]$ independently per example and per step and maximise $\mathbb{E}_\lambda[J_i(\theta,\lambda)]$. The maximiser of the expected reward under a uniform $\lambda$ satisfies $\gain_i=\mathbb{E}[\Delta_i\mid x_i]$ wherever the sigmoid is not saturated, so $\gain$ remains an estimate of the true expected gain and the deterministic rule $\gain_i>\lambda$ stays valid for any $\lambda$ in the range.
-
-\paragraph{Calibration and anchor.} Two regularisers complete the objective. A Brier term on the reported confidence, $(c_i-a_i^{\fast})^2$, is a proper scoring rule and keeps $P(\fast\checkmark)$ calibrated; the policy term alone would not constrain it. A down-weighted cross-entropy anchor keeps the remaining outcome mass meaningful. The full loss is
-\begin{equation}
-  \mathcal{L}_{\cdpo}(\theta)=\mathbb{E}_{i,\lambda}\Big[-\pi_\theta(\text{escalate}\mid x_i,\lambda)\,(\Delta_i-\lambda)\Big]
-  +\beta\,\mathbb{E}_i\big[(c_i-a_i^{\fast})^2\big]
-  +\gamma\,\mathbb{E}_i\big[\mathrm{CE}(\vo_i,y_i)\big].
-  \label{eq:cdpo}
-\end{equation}
-Everything else in Algorithm~\ref{alg:train} is unchanged: the same features, the same PCA bottleneck, the same grouped selection and early stopping. \cdpo{} is a drop-in replacement for the loss on lines~5 and~11. Algorithm~\ref{alg:cdpo} gives one step. In Section~\ref{sec:objective} we show that it raises routing quality and lowers calibration error over cross-entropy on the same features, across seeds.
-
-\begin{algorithm}[t]
-\caption{One \cdpo{} step for the decision head (backbone frozen)}
-\label{alg:cdpo}
-\begin{algorithmic}[1]
-\REQUIRE minibatch $\{(\vu_i,y_i,a_i^{\fast},a_i^{\slow})\}$, cost range $[\lambda_{\min},\lambda_{\max}]$, temperature $T$, weights $\beta,\gamma$
-\STATE $\vo_i\leftarrow\mathrm{softmax}(H_\theta(\vu_i))$;\quad $\gain_i\leftarrow\vo_{i,3}-\vo_{i,2}$;\quad $c_i\leftarrow\vo_{i,1}+\vo_{i,2}$
-\STATE $\Delta_i\leftarrow a_i^{\slow}-a_i^{\fast}$;\quad $\lambda_i\sim\mathcal{U}[\lambda_{\min},\lambda_{\max}]$
-\STATE $\pi_i\leftarrow\sigma\big((\gain_i-\lambda_i)/T\big)$ \COMMENT{soft routing policy}
-\STATE $\mathcal{L}\leftarrow\frac{1}{n}\sum_i\Big[-\pi_i(\Delta_i-\lambda_i)+\beta\,(c_i-a_i^{\fast})^2+\gamma\,\mathrm{CE}(\vo_i,y_i)\Big]$
-\STATE $\theta\leftarrow\theta-\eta\nabla_\theta\mathcal{L}$ \COMMENT{AdamW; exact expected reward, no sampling of actions}
-\end{algorithmic}
-\end{algorithm}
-
 \paragraph{Serving.}
 The trained head is a single safetensors file that records the backbone identifier and revision, the prompt format, the layer, and the PCA rank; the server refuses a head whose metadata does not match the loaded backbone. The standard endpoint is unchanged. A second endpoint accepts the same request body plus an optional $\{\lambda,B\}$ block and returns the same response shape.
 
@@ -252,7 +207,7 @@ Accuracy on the held-out categories as a function of escalation rate, swept over
 \subsection{Main result}
 
 \begin{table}[t]
-\caption{Held-out accuracy and cost on three unseen MMLU-Pro categories (346 questions), Qwen3.5-4B, layer-24 PCA-64 head, training seed 0. Tokens are mean generated thinking tokens per question. ``Gain kept'' is the fraction of the fast$\to$slow accuracy gain recovered. Seed variation is reported in Table~\ref{tab:objective}.}
+\caption{Held-out accuracy and cost on three unseen MMLU-Pro categories (346 questions), Qwen3.5-4B. Tokens are mean generated thinking tokens per question. ``Gain kept'' is the fraction of the fast$\to$slow accuracy gain recovered.}
 \label{tab:main}
 \centering
 \small
@@ -265,18 +220,14 @@ Slow only (always think) & -- & 100\% & 0.740 & 994 & 100\% \\
 \midrule
 Random routing & -- & 53\% & 0.646 & 527 & 53\% \\
 Stats-only head & 0 & 48\% & 0.682 & 477 & 71\% \\
-\method{}, cross-entropy & $0.1$ & 35\% & 0.691 & 345 & 76\% \\
-\method{}, cross-entropy & $0$ & 53\% & 0.717 & 526 & 89\% \\
-\method{}, cross-entropy & $-0.1$ & 84\% & 0.728 & 830 & 94\% \\
-\midrule
-\method{}, \cdpo{} & $0.1$ & 48\% & 0.708 & 474 & 84\% \\
-\method{}, \cdpo{} & $-0.05$ & 63\% & 0.728 & 626 & 94\% \\
-\method{}, \cdpo{} & $-0.1$ & 72\% & \textbf{0.740} & 719 & 100\% \\
+\method{} (layer 24, PCA-64) & $0.1$ & 35\% & 0.691 & 345 & 76\% \\
+\method{} (layer 24, PCA-64) & $0$ & 53\% & \textbf{0.717} & 526 & 89\% \\
+\method{} (layer 24, PCA-64) & $-0.1$ & 84\% & 0.728 & 830 & 94\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:main} and Figure~\ref{fig:curve} give the main result. Thinking helps on 24.6\% of held-out questions and hurts on 4.6\%, so the ceiling for any router is 0.740 and the fast floor is 0.540. With the cross-entropy head at $\lambda=0$, the router escalates 53\% of questions and reaches 0.717: 89\% of the available gain for 53\% of the token cost. At $\lambda=0.1$ it keeps 76\% of the gain for 35\% of the cost. Both curves lie above the random-routing line everywhere and above the stats-only head at every escalation rate, by about three accuracy points in the middle of the range (0.717 vs.\ 0.682 near 50\% escalation; 0.691 vs.\ 0.656 near 33\%). Training the same head with \cdpo{} moves the upper part of the curve further: at $\lambda=-0.1$ it escalates 72\% of questions and matches always-thinking accuracy (0.740) at 72\% of its token cost, and at $\lambda=-0.05$ it keeps 94\% of the gain for 63\%. These are single-seed points; Section~\ref{sec:objective} gives the averaged comparison.
+Table~\ref{tab:main} and Figure~\ref{fig:curve} give the main result. Thinking helps on 24.6\% of held-out questions and hurts on 4.6\%, so the ceiling for any router is 0.740 and the fast floor is 0.540. At $\lambda=0$ the decision head escalates 53\% of questions and reaches 0.717: 89\% of the available gain for 53\% of the token cost. At $\lambda=0.1$ it keeps 76\% of the gain for 35\% of the cost. The curve lies above the random-routing line everywhere and above the stats-only head at every escalation rate, by about three accuracy points in the middle of the range (0.717 vs.\ 0.682 near 50\% escalation; 0.691 vs.\ 0.656 near 33\%).
 
 \begin{figure}[t]
 \centering
@@ -294,9 +245,7 @@ Table~\ref{tab:main} and Figure~\ref{fig:curve} give the main result. Thinking h
 \addplot[frozen, dashed, domain=0:1, samples=2] {0.5405 + x*(0.7399-0.5405)};
 \addlegendentry{random routing}
 \addplot[trained, mark=*, mark size=1.4pt] table[x=rate, y=acc] {curve_head.dat};
-\addlegendentry{\method{} head, cross-entropy}
-\addplot[trained!70!black, densely dashed, mark=triangle*, mark size=1.6pt] table[x=rate, y=acc] {curve_cdpo.dat};
-\addlegendentry{\method{} head, \cdpo{} objective}
+\addlegendentry{\method{} head (layer 24, PCA-64)}
 \addplot[blue!60!black, mark=square*, mark size=1.3pt] table[x=rate, y=acc] {curve_stats.dat};
 \addlegendentry{stats-only head}
 \addplot[frozen, only marks, mark=diamond*, mark size=2.2pt] coordinates {(0,0.5405) (1,0.7399)};
@@ -305,7 +254,7 @@ Table~\ref{tab:main} and Figure~\ref{fig:curve} give the main result. Thinking h
 \addlegendentry{$\lambda=0$ operating point}
 \end{axis}
 \end{tikzpicture}
-\caption{Coverage--accuracy curves on held-out categories (layer-24 PCA-64 head, seed 0). Each marker is one value of $\lambda$. Both decision heads dominate the random-routing line and a router that sees only the fast answer distribution; the \cdpo{} head reaches the slow-only accuracy at 72\% escalation. The value is keeping most or all of the gain at a fraction of the cost.}
+\caption{Coverage--accuracy curves on held-out categories. Each marker is one value of $\lambda$. The decision head dominates both the random-routing line and a router that sees only the fast answer distribution. No router at this AUROC reaches the slow-only point; the value is keeping most of the gain at a fraction of the cost.}
 \label{fig:curve}
 \end{figure}
 
@@ -338,39 +287,6 @@ Table~\ref{tab:features} separates two questions. \emph{Does the hidden state ad
 
 Two further observations. Layer 24 of 32 carries a stronger routing signal than the final normalised output, consistent with probing results that place self-knowledge in intermediate layers \citep{azaria2023internal}. And the PCA bottleneck is not optional at this data size: raw 2560-dimensional inputs score lower than their bottlenecked counterparts on the layer that matters and, in an earlier 1{,}000-question run, fell below the stats-only floor.
 
-\subsection{Training objective: cross-entropy versus \cdpo{}}
-\label{sec:objective}
-
-\begin{table}[t]
-\caption{Cross-entropy versus \cdpo{} on the same features (layer 24, PCA-64), same split, five training seeds, mean $\pm$ standard deviation on the held-out categories. Routing AUROC ranks questions where thinking helps; ECE and Brier score the reported confidence $c_i$ against fast-answer correctness. Bottom: held-out accuracy at matched escalation rates, linearly interpolated on each seed's curve. Random routing at the same rates: 0.600, 0.640, 0.680, 0.700.}
-\label{tab:objective}
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lcccc}
-\toprule
-Objective & Routing AUROC & Fast AUROC & ECE & Brier \\
-\midrule
-Cross-entropy & $0.696\pm0.015$ & $0.831\pm0.006$ & $0.088\pm0.020$ & $0.172\pm0.004$ \\
-\cdpo{} & $\mathbf{0.743\pm0.010}$ & $0.836\pm0.003$ & $\mathbf{0.057\pm0.019}$ & $\mathbf{0.166\pm0.003}$ \\
-\bottomrule
-\end{tabular}
-\vspace{4pt}
-
-\begin{tabular}{lcccc}
-\toprule
-Accuracy at escalation rate & 30\% & 50\% & 70\% & 80\% \\
-\midrule
-Cross-entropy & $0.672\pm0.005$ & $0.703\pm0.009$ & $0.716\pm0.005$ & $0.723\pm0.005$ \\
-\cdpo{} & $0.668\pm0.005$ & $\mathbf{0.709\pm0.003}$ & $\mathbf{0.728\pm0.005}$ & $\mathbf{0.729\pm0.005}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Table~\ref{tab:objective} isolates the objective: features, bottleneck, split and early-stopping protocol are held fixed and only the loss changes, over five training seeds. \cdpo{} improves routing AUROC from 0.696 to 0.743, a larger step than the one from the stats-only floor to the cross-entropy head, and does so on every seed (0.756 vs.\ 0.700, 0.728 vs.\ 0.686, 0.744 vs.\ 0.715, 0.738 vs.\ 0.705, 0.751 vs.\ 0.672). It also lowers the calibration error of the reported confidence by a third, from an ECE of 0.088 to 0.057, with a matching Brier improvement; the fast-correct AUROC is unchanged, as expected, since the policy term does not touch what the confidence ranks, only how well it is scaled. On the coverage--accuracy curve the gain concentrates where the policy term concentrates its gradient: at 50\% escalation and above, \cdpo{} is 0.6 to 1.2 points higher with a seed variance one third of cross-entropy's, while below 40\% the two are within noise. Random routing at 70\% escalation reaches 0.680; cross-entropy reaches 0.716 and \cdpo{} 0.728, against an always-thinking ceiling of 0.740.
-
-Two remarks. First, \cdpo{} is not reinforcement learning in the usual sense: because both arms' outcomes are recorded for every question, the expected reward is computed exactly and differentiated, so there is no sampling noise and the training cost is that of supervised learning. Second, the $\lambda$-marginalisation matters for the product: the same head serves every $\lambda$ in the range, and the operating points in Table~\ref{tab:main} are read off the one trained head by changing the request-time threshold.
-
 \subsection{Per-category behaviour}
 
 Table~\ref{tab:categories} in the appendix breaks the full 1{,}500 questions down by subject. The fraction of questions where thinking helps ranges from 10\% (biology) to 50\% (math), and the fraction where it hurts from under 1\% (physics) to 9\% (engineering, where the slow path barely improves on the fast one). A good router must therefore be subject-sensitive, and the head sees no subject label; whatever it learns about subjects it learns from the hidden state. The held-out categories span this range (chemistry 35\% helps, psychology 13\%), so the reported numbers are not from an easy slice.
@@ -399,7 +315,7 @@ The evidence is from one backbone, one seed and one benchmark of \texttt{choice}
 
 \section{Conclusion}
 
-A frozen typed-decision model can be taught, with a few hundred kilobytes of added parameters and no annotation beyond a labelled question set, to decide which questions are worth thinking about. The decision reads a hidden state the model computes anyway, so it costs nothing on the fast path, and the cost of thinking is exposed as a single request-time threshold. On MMLU-Pro with a 4B backbone a cross-entropy head keeps 89\% of the accuracy that always-thinking buys for 53\% of its tokens, and a head trained with \cdpo{} for the routed reward itself matches always-thinking accuracy at 72\% of the tokens while reporting better-calibrated confidence. The signal that makes this work is in an intermediate layer's hidden state and is about \emph{whether thinking would help}, not merely whether the fast answer is wrong; the latter the fast distribution already knows.
+A frozen typed-decision model can be taught, with a few hundred kilobytes of added parameters and no annotation beyond a labelled question set, to decide which questions are worth thinking about. The decision reads a hidden state the model computes anyway, so it costs nothing on the fast path, and the cost of thinking is exposed as a single request-time threshold. On MMLU-Pro with a 4B backbone this keeps 89\% of the accuracy that always-thinking buys for 53\% of its tokens. The signal that makes this work is in an intermediate layer's hidden state and is about \emph{whether thinking would help}, not merely whether the fast answer is wrong; the latter the fast distribution already knows.
 
 \bibliography{references}
 \bibliographystyle{iclr2027_conference}
@@ -452,13 +368,12 @@ System: \emph{``Evaluate the state using the question and labeled options. Think
 \begin{tabular}{ll}
 \toprule
 Fast-path temperature $\tau$ & 1 (uncalibrated) \\
-Distribution statistics & max prob, norm.\ entropy, top-2 margin, concentration, $\log K$, type one-hot \\
+Distribution statistics & max prob, normalised entropy, top-2 margin, concentration, $\log K$, type one-hot \\
 Collected layers & $\{-1,16,24\}$ (hidden\_states indices) \\
 PCA rank $r$ & 64, whitened, fit on standardised training hidden states \\
 MLP width $w$ & 64 (PCA heads), 256 (raw heads), 32 (stats-only) \\
 Optimiser & AdamW, lr $10^{-3}$, weight decay 0.05, batch 256 \\
 Regularisation & dropout 0.3, class-weighted cross-entropy, early stopping (patience 6) \\
-\cdpo{} & $\lambda\sim\mathcal{U}[-0.2,0.5]$, $T=0.05$, $\beta=1$, $\gamma=0.25$; same optimiser, early stopping \\
 Selection & 4 category-grouped folds, mean routing AUROC \\
 Held-out categories & chemistry, economics, psychology \\
 Slow-path decoding & greedy, $B=1024$, stop at \texttt{</think>} \\

@@ -37,7 +37,7 @@ def test_attribution_and_citation_are_present():
     assert "Version 2.0, January 2004" in (ROOT / "LICENSE").read_text()
     assert "Copyright 2026 ZhengxuYu" in (ROOT / "NOTICE").read_text()
     citation = (ROOT / "CITATION.cff").read_text()
-    assert "license: Apache-2.0" in citation
+    assert 'license: Apache-2.0' in citation
     assert 'version: "0.1.0"' in citation
     readme = (ROOT / "README.md").read_text()
     assert readme.rfind("## Citation") > readme.rfind("## License")

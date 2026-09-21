@@ -386,49 +386,13 @@ def test_collect_save_load_and_train(tmp_path):
     )
     assert fallback["split_level"] == "example"
     assert 0 < fallback["test_count"] < 12
-    assert set(report["by_objective"]) == {"supervised", "cdpo"}
-    assert report["objective"] == "supervised"
-    for result in report["by_objective"].values():
-        assert 0 <= result["ece_fast_correct"] <= 1 and 0 <= result["brier_fast_correct"] <= 1
     assert 0 < report["train_count"] < 12
-    assert set(report["head"]) >= {"auroc_fast_correct", "auroc_gain_vs_helps", "curve"}
+    assert set(report["head"]) == {"auroc_fast_correct", "auroc_gain_vs_helps", "curve"}
     assert head.metadata.training["chosen_layers"] == report["chosen_layers"]
     out = tmp_path / "head.safetensors"
     head.save(out)
     assert DecisionHead.load(out).metadata.feature_layers == tuple(report["chosen_layers"])
     json.dumps(report)
-
-
-def test_cdpo_objective_trains_and_prefers_escalating_helpful_questions():
-    from litjev.heads import CDPOConfig, cdpo_loss
-
-    rng = np.random.default_rng(1)
-    meta = HeadMetadata("m", "r", hidden_size=4, feature_layers=(-1,), hidden_width=16)
-    # Feature 0 marks questions where thinking helps (label 2); others are label 0.
-    helps = rng.random(200) < 0.4
-    features = rng.normal(size=(200, meta.input_dim)).astype(np.float32)
-    features[:, 0] += 3 * helps
-    labels = np.where(helps, 2, 0)
-    head, history = train_head(
-        meta, features, labels, epochs=60, batch_size=16, patience=20, objective="cdpo", seed=1
-    )
-    assert "val_loss" in history[0]
-    outcome = head.predict(features)
-    gain = outcome[:, 2] - outcome[:, 1]
-    assert gain[helps].mean() > gain[~helps].mean() + 0.3
-    assert auroc(gain, helps) > 0.9
-    with pytest.raises(ValueError):
-        train_head(meta, features, labels, epochs=1, objective="reinforce")
-    # Loss is finite and the policy term rewards escalating exactly the helpful ones.
-    logits = torch.zeros(4, 4)
-    loss = cdpo_loss(
-        logits,
-        torch.tensor([0, 1, 2, 3]),
-        torch.ones(4),
-        CDPOConfig(lambda_range=(0.0, 0.0)),
-        torch.Generator().manual_seed(0),
-    )
-    assert torch.isfinite(loss)
 
 
 # ---------------------------------------------------------------- API

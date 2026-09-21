@@ -249,18 +249,8 @@ def train_head():
     parser.add_argument("--select-layers", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--probe-epochs", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=0, help="Controls the category split")
-    parser.add_argument("--train-seed", type=int, help="Head initialisation; defaults to --seed")
-    parser.add_argument(
-        "--candidate", help="Skip selection and train this candidate, e.g. layer_24_pca64"
-    )
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--lambdas", default=",".join(map(str, DEFAULT_LAMBDAS)))
-    parser.add_argument(
-        "--objective",
-        choices=["supervised", "cdpo"],
-        default="supervised",
-        help="Final-head objective; both are trained and reported, this one is saved",
-    )
     args = parser.parse_args()
     if not 0 < args.holdout_fraction < 1:
         parser.error("--holdout-fraction must be in (0, 1)")
@@ -274,9 +264,6 @@ def train_head():
         args.probe_epochs,
         args.seed,
         tuple(float(x) for x in args.lambdas.split(",")),
-        objective=args.objective,
-        train_seed=args.train_seed,
-        force_candidate=args.candidate,
     )
     head.save(args.output)
     Path(args.report).write_text(json.dumps(report, indent=2) + "\n")
@@ -285,14 +272,7 @@ def train_head():
             {
                 "chosen": report["chosen"],
                 "chosen_layers": report["chosen_layers"],
-                "objective": report["objective"],
                 "auroc_head": report["head"]["auroc_fast_correct"],
-                "routing_auroc_by_objective": {
-                    k: v["auroc_gain_vs_helps"] for k, v in report["by_objective"].items()
-                },
-                "ece_by_objective": {
-                    k: v["ece_fast_correct"] for k, v in report["by_objective"].items()
-                },
                 "auroc_stats_probe": report["baseline_stats_probe"]["auroc_fast_correct"],
                 "auroc_concentration": report["baseline_auroc_concentration"],
                 "auroc_max_probability": report["baseline_auroc_max_probability"],

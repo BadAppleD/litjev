@@ -31,9 +31,7 @@ class CalibrationProfile:
     def load(cls, path: str | Path) -> CalibrationProfile:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         if data.get("slot_format") != SLOT_FORMAT:
-            raise ValueError(
-                "Calibration prompt format changed; refit on current validation logits"
-            )
+            raise ValueError("Calibration prompt format changed; refit on current validation logits")
         return cls(**data)
 
 
