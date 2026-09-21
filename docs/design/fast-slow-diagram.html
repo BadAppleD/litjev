@@ -226,7 +226,17 @@
     <figcaption>Found on the first Qwen3.5-4B run and fixed. With <code>enable_thinking=False</code> the fast prefix carries an empty think block, so the model treats thinking as already finished. The slow path now renders its own prompt with thinking enabled and the question in the user turn, so the template itself ends with <code>&lt;think&gt;</code>. Not a single backbone weight changed.</figcaption>
   </figure>
 
-  <div class="note">Status: the fix is committed and synced to the cluster, and the rerun is in progress. The first run, whose slow path never thought, still trains a head; it answers whether the hidden state predicts fast-answer correctness, which does not depend on the slow path.</div>
+  <h2>First numbers</h2>
+  <p>Qwen3.5-4B, 1500 MMLU-Pro questions across all 14 subjects, 1024 thinking tokens, evaluated on three held-out subjects (346 questions). Thinking helped on 24.6% of them and hurt on 4.6%.</p>
+  <table>
+    <tr><th>Policy</th><th>Escalation</th><th>Accuracy</th></tr>
+    <tr><td>Fast only</td><td class="num">0%</td><td class="num">0.540</td></tr>
+    <tr><td>Slow only</td><td class="num">100%</td><td class="num">0.740</td></tr>
+    <tr><td>Stats-only head, λ = 0</td><td class="num">48%</td><td class="num">0.682</td></tr>
+    <tr><td>Layer 24 + PCA-64 head, λ = 0</td><td class="num">53%</td><td class="num">0.717</td></tr>
+    <tr><td>Layer 24 + PCA-64 head, λ = −0.1</td><td class="num">84%</td><td class="num">0.728</td></tr>
+  </table>
+  <div class="note">The hidden-state head beats the stats-only floor at every escalation rate, by about three points; routing AUROC 0.72 versus 0.70. With a twenty-point gap between fast and slow, a router at that AUROC keeps most of the gain at half the thinking cost rather than matching slow-only. Thinking still hit the budget on 90% of questions, so slow accuracy is a floor. One seed, one checkpoint: a pipeline check, not a benchmark.</div>
 
   <h2>Where it lives in the code</h2>
   <table>

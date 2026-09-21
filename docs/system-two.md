@@ -76,24 +76,37 @@ uv run litjev-train-head results/records-*.npz
 
 ## First results (Qwen3.5-4B, 2026-09-21)
 
-1000 MMLU-Pro test questions sampled with `--stride 12` across all 14 categories,
-512 thinking tokens, layers `-1,16,24`. Reported on three held-out categories
-(chemistry, economics, psychology); selection used K-fold over the other eleven.
+1500 MMLU-Pro test questions sampled with `--stride 8` across all 14 categories,
+1024 thinking tokens, layers `-1,16,24`. Reported on three held-out categories
+(chemistry, economics, psychology, 346 questions); selection used 4-fold
+cross-validation over the other eleven. Thinking helped on 24.6% of held-out
+questions and hurt on 4.6%.
 
 | Policy | Escalation rate | Accuracy |
 | --- | ---: | ---: |
-| Fast only | 0% | 0.578 |
-| Slow only | 100% | 0.616 |
-| Stats-only head, λ = 0 | 47% | 0.642 |
-| Layer 16 + PCA-64 head, λ = −0.05 | 55% | 0.642 |
+| Fast only | 0% | 0.540 |
+| Slow only | 100% | 0.740 |
+| Stats-only head, λ = 0 | 48% | 0.682 |
+| Layer 24 + PCA-64 head, λ = 0 | 53% | 0.717 |
+| Layer 24 + PCA-64 head, λ = −0.1 | 84% | 0.728 |
 
-Routing AUROC (does the head rank "thinking helps" cases first): stats-only 0.68,
-layer 16 + PCA-64 0.67 after retraining on all training data (0.74 in cross-validation).
-Raw hidden states without the PCA bottleneck overfit at this data size and scored below
-the stats-only floor; whole-set selection on a single validation split chose them anyway,
-which is why selection is now K-fold. Thinking hit the 512-token budget on 98.5% of
-questions, so "slow" here is truncated reasoning. Numbers are from one seed and one
-checkpoint; treat them as a pipeline check, not a benchmark result.
+The chosen head (layer 24 hidden state through a whitened 64-component PCA, plus the
+distribution statistics) beats the stats-only floor at every escalation rate: at about
+one third escalation it holds 0.69 against 0.66, at one half 0.72 against 0.68. Routing
+AUROC on held-out subjects is 0.72 for the head and 0.70 for stats-only; fast-correct
+AUROC is 0.83 for both, level with max probability (0.84). So the hidden state adds
+information about *when thinking will help* that the fast distribution alone lacks,
+modestly, and the gain grew from 1000 to 1500 examples.
+
+With a 20-point gap between fast and slow, no router with AUROC 0.72 reaches slow-only
+accuracy; the value is keeping most of the gain at half the thinking cost. Thinking still
+hit the 1024-token budget on 90% of questions (median 1024), so slow accuracy is a floor.
+
+Earlier pipeline lessons, kept for the record: with 512 tokens the budget was hit on
+98.5% of questions and slow-only scored 0.616; raw hidden states without the PCA
+bottleneck overfit at this data size and scored below the stats-only floor; single-split
+selection chose them anyway, which is why selection is now K-fold. Numbers are from one
+seed and one checkpoint; treat them as a pipeline check, not a benchmark result.
 
 ## What to expect and what is not claimed
 
