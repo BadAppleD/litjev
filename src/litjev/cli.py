@@ -270,6 +270,7 @@ def train_head():
     print(
         json.dumps(
             {
+                "chosen": report["chosen"],
                 "chosen_layers": report["chosen_layers"],
                 "auroc_head": report["head"]["auroc_fast_correct"],
                 "auroc_stats_probe": report["baseline_stats_probe"]["auroc_fast_correct"],

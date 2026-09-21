@@ -66,6 +66,12 @@ def evaluate_head(head, features, fast_correct, slow_correct, lambdas=DEFAULT_LA
     }
 
 
+def _selection_score(result):
+    """Routing objective first; fall back to fast-correct AUROC when no escalation helped."""
+    gain = result["auroc_gain_vs_helps"]
+    return float(gain) if np.isfinite(gain) else float(np.nan_to_num(result["auroc_fast_correct"]))
+
+
 def run_training(
     records,
     metadata,
@@ -76,40 +82,76 @@ def run_training(
     seed=0,
     lambdas=DEFAULT_LAMBDAS,
 ):
-    """Layer sweep, then a final head on the best layers. Returns (head, report)."""
+    """Select a feature set on a validation split, retrain it on all training data,
+    report on held-out categories. Returns (head, report).
+
+    Candidates are the stats-only head (no hidden states, the floor) and one head
+    per collected layer. Selection never sees the test split.
+    """
     layers = tuple(metadata["feature_layers"])
     fast = np.asarray(records["fast_correct"], dtype=bool)
     slow = np.asarray(records["slow_correct"], dtype=bool)
     labels = outcome_labels(fast, slow)
     test, split_level = holdout_mask(records["category"], holdout_fraction, seed)
     train = ~test
+    # Inner split for model selection, carved from the training side only.
+    train_index = np.flatnonzero(train)
+    try:
+        inner_val, _ = holdout_mask(
+            np.asarray(records["category"])[train], holdout_fraction, seed + 1
+        )
+    except ValueError:
+        inner_val = np.arange(len(train_index)) % 4 == 0  # tiny sets: every fourth example
+    fit_index, val_index = train_index[~inner_val], train_index[inner_val]
     base = {
         "model_id": metadata["model_id"],
         "revision": metadata["revision"],
         "hidden_size": int(metadata["hidden_size"]),
     }
-    # Stats-only probe: the floor that hidden states must beat to be worth carrying.
-    stats_meta = HeadMetadata(**base, feature_layers=(), hidden_width=32)
-    stats_features = features_for(records, ())
-    stats_probe, _ = train_head(
-        stats_meta, stats_features[train], labels[train], epochs=probe_epochs, seed=seed
-    )
-    stats_only = evaluate_head(stats_probe, stats_features[test], fast[test], slow[test], lambdas)
+    candidates = [{"name": "stats_only", "layers": (), "positions": (), "width": 32}]
+    candidates += [
+        {"name": f"layer_{layer}", "layers": (layer,), "positions": (position,), "width": 256}
+        for position, layer in enumerate(layers)
+    ]
+    if select_layers > 1 and len(layers) > 1:
+        candidates.append(
+            {
+                "name": "all_layers",
+                "layers": layers,
+                "positions": tuple(range(len(layers))),
+                "width": 256,
+            }
+        )
     sweep = []
-    for position, layer in enumerate(layers):
-        meta = HeadMetadata(**base, feature_layers=(layer,))
-        features = features_for(records, (position,))
-        probe, _ = train_head(meta, features[train], labels[train], epochs=probe_epochs, seed=seed)
-        result = evaluate_head(probe, features[test], fast[test], slow[test], lambdas)
-        sweep.append({"layer": layer, "position": position, **result})
-    ranked = sorted(sweep, key=lambda row: -np.nan_to_num(row["auroc_fast_correct"]))
-    chosen = ranked[: max(1, min(select_layers, len(ranked)))]
-    positions = tuple(sorted(row["position"] for row in chosen))
-    chosen_layers = tuple(layers[p] for p in positions)
-    meta = HeadMetadata(**base, feature_layers=chosen_layers)
-    features = features_for(records, positions)
+    for candidate in candidates:
+        meta = HeadMetadata(
+            **base, feature_layers=candidate["layers"], hidden_width=candidate["width"]
+        )
+        features = features_for(records, candidate["positions"])
+        probe, _ = train_head(
+            meta, features[fit_index], labels[fit_index], epochs=probe_epochs, seed=seed
+        )
+        validation = evaluate_head(
+            probe, features[val_index], fast[val_index], slow[val_index], lambdas
+        )
+        held_out = evaluate_head(probe, features[test], fast[test], slow[test], lambdas)
+        sweep.append(
+            {
+                "name": candidate["name"],
+                "layers": list(candidate["layers"]),
+                "validation": validation,
+                "test": held_out,
+                "selection_score": _selection_score(validation),
+            }
+        )
+    best = max(sweep, key=lambda row: row["selection_score"])
+    chosen = next(c for c in candidates if c["name"] == best["name"])
+    chosen_layers = tuple(chosen["layers"])
+    meta = HeadMetadata(**base, feature_layers=chosen_layers, hidden_width=chosen["width"])
+    features = features_for(records, chosen["positions"])
     head, history = train_head(meta, features[train], labels[train], epochs=epochs, seed=seed)
     final = evaluate_head(head, features[test], fast[test], slow[test], lambdas)
+    stats_only = next(row for row in sweep if row["name"] == "stats_only")["test"]
     max_probability = records["fast_probability"][test]
     concentration = records["stats"][test, 3]
     report = {
@@ -117,13 +159,15 @@ def run_training(
         "test_count": int(test.sum()),
         "holdout_fraction": holdout_fraction,
         "split_level": split_level,
+        "selection_validation_count": len(val_index),
         "categories_seen": sorted({str(c) for c in np.asarray(records["category"])}),
         "held_out_categories": sorted({str(c) for c in np.asarray(records["category"])[test]}),
         "fast_accuracy": float(fast[test].mean()),
         "slow_accuracy": float(slow[test].mean()),
         "thinking_helps_rate": float((~fast[test] & slow[test]).mean()),
         "thinking_hurts_rate": float((fast[test] & ~slow[test]).mean()),
-        "layer_sweep": sweep,
+        "candidates": sweep,
+        "chosen": best["name"],
         "chosen_layers": list(chosen_layers),
         "baseline_auroc_max_probability": auroc(max_probability, fast[test]),
         "baseline_auroc_concentration": auroc(concentration, fast[test]),
@@ -134,6 +178,7 @@ def run_training(
     head.metadata = HeadMetadata(
         **base,
         feature_layers=chosen_layers,
+        hidden_width=chosen["width"],
         training={
             key: report[key]
             for key in (

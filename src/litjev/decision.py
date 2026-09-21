@@ -133,11 +133,14 @@ class SchemaDecisionEngine:
         """Decision head prediction for one fast readout, or None without a head."""
         if self.head is None:
             return None
-        if row.hidden is None:
-            raise RuntimeError("Decision head requires readout hidden states from the scorer")
         from litjev.heads import build_features
 
-        features = build_features(row.hidden, distribution.probabilities, question.type)
+        hidden = row.hidden
+        if not self.head.metadata.feature_layers:
+            hidden = np.zeros(0, dtype=np.float32)  # stats-only head
+        elif hidden is None:
+            raise RuntimeError("Decision head requires readout hidden states from the scorer")
+        features = build_features(hidden, distribution.probabilities, question.type)
         return self.head.predict(features)[0]
 
     def evaluate(self, state, schema, routing=None):

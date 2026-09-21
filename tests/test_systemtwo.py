@@ -303,6 +303,18 @@ def test_engine_without_routing_never_thinks_and_head_needs_hidden():
             "s", two_questions()
         )
 
+    class StatsOnlyHead(FakeHead):
+        def __init__(self, outcomes):
+            super().__init__(outcomes)
+            self.metadata = HeadMetadata("m", "r", hidden_size=4, feature_layers=())
+
+    # A stats-only head needs no hidden states from the scorer at all.
+    stats_engine = SchemaDecisionEngine(
+        NoHidden(), head=StatsOnlyHead([[0.7, 0.1, 0.1, 0.1], [0.2, 0.2, 0.5, 0.1]])
+    )
+    result = stats_engine.evaluate("s", two_questions()).result
+    assert result.answers["q1"].confidence == pytest.approx(0.8)
+
 
 # ---------------------------------------------------------------- collection & training
 
@@ -346,13 +358,15 @@ def test_collect_save_load_and_train(tmp_path):
     head, report = run_training(loaded, meta, holdout_fraction=0.5, epochs=2, probe_epochs=1)
     assert report["split_level"] == "category"
     assert report["categories_seen"] == ["law", "math"]
-    assert report["chosen_layers"][0] in (-1, 1)
+    assert report["chosen"] in ("stats_only", "layer_-1", "layer_1")
+    assert [c["name"] for c in report["candidates"]] == ["stats_only", "layer_-1", "layer_1"]
+    assert all({"validation", "test", "selection_score"} <= set(c) for c in report["candidates"])
     # A single-category collection cannot hold out a category; fall back to examples.
     single = {**loaded, "category": np.array(["law"] * 12)}
     _, fallback = run_training(single, meta, holdout_fraction=0.5, epochs=1, probe_epochs=1)
     assert fallback["split_level"] == "example"
     assert 0 < fallback["test_count"] < 12
-    assert len(report["layer_sweep"]) == 2
+    assert len(report["candidates"]) == 3
     assert 0 < report["train_count"] < 12
     assert set(report["head"]) == {"auroc_fast_correct", "auroc_gain_vs_helps", "curve"}
     assert head.metadata.training["chosen_layers"] == report["chosen_layers"]
