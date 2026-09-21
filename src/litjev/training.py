@@ -7,6 +7,7 @@ never memorization of the training questions.
 from __future__ import annotations
 
 import hashlib
+from itertools import pairwise
 
 import numpy as np
 
@@ -70,13 +71,29 @@ def features_for(records, layer_positions):
     return np.concatenate([hidden.reshape(len(hidden), -1), records["stats"]], axis=1)
 
 
+def expected_calibration_error(confidence, correct, bins=10):
+    """ECE with equal-width bins; empty bins contribute nothing."""
+    confidence = np.asarray(confidence, dtype=np.float64)
+    correct = np.asarray(correct, dtype=np.float64)
+    edges = np.linspace(0, 1, bins + 1)
+    error = 0.0
+    for low, high in pairwise(edges):
+        mask = (confidence >= low) & (confidence < high if high < 1 else confidence <= high)
+        if mask.any():
+            error += mask.mean() * abs(confidence[mask].mean() - correct[mask].mean())
+    return float(error)
+
+
 def evaluate_head(head, features, fast_correct, slow_correct, lambdas=DEFAULT_LAMBDAS):
     outcome = head.predict(features)
     confidence = np.array([fast_confidence(row) for row in outcome])
     gain = np.array([escalation_gain(row) for row in outcome])
+    fast_correct = np.asarray(fast_correct, dtype=bool)
     return {
         "auroc_fast_correct": auroc(confidence, fast_correct),
         "auroc_gain_vs_helps": auroc(gain, ~fast_correct & slow_correct),
+        "brier_fast_correct": float(np.mean((confidence - fast_correct) ** 2)),
+        "ece_fast_correct": expected_calibration_error(confidence, fast_correct),
         "curve": coverage_accuracy_curve(gain, fast_correct, slow_correct, lambdas),
     }
 
@@ -98,6 +115,10 @@ def run_training(
     lambdas=DEFAULT_LAMBDAS,
     selection_folds=4,
     pca_dim=64,
+    objective="supervised",
+    cdpo=None,
+    train_seed=None,
+    force_candidate=None,
 ):
     """Select a feature set by grouped cross-validation over training categories,
     retrain it on all training data, report on held-out categories. Returns (head, report).
@@ -107,6 +128,7 @@ def run_training(
     bottleneck. Selection never sees the test split.
     """
     layers = tuple(metadata["feature_layers"])
+    train_seed = seed if train_seed is None else train_seed  # splits stay fixed across seeds
     fast = np.asarray(records["fast_correct"], dtype=bool)
     slow = np.asarray(records["slow_correct"], dtype=bool)
     labels = outcome_labels(fast, slow)
@@ -166,7 +188,7 @@ def run_training(
             if len(val_index) == 0 or len(fit_index) < 2:
                 continue
             probe, _ = train_head(
-                meta, features[fit_index], labels[fit_index], epochs=probe_epochs, seed=seed
+                meta, features[fit_index], labels[fit_index], epochs=probe_epochs, seed=train_seed
             )
             validation = evaluate_head(
                 probe, features[val_index], fast[val_index], slow[val_index], lambdas
@@ -175,7 +197,7 @@ def run_training(
             fold_fast.append(validation["auroc_fast_correct"])
             fold_gain.append(validation["auroc_gain_vs_helps"])
         probe, _ = train_head(
-            meta, features[train_index], labels[train_index], epochs=probe_epochs, seed=seed
+            meta, features[train_index], labels[train_index], epochs=probe_epochs, seed=train_seed
         )
         held_out = evaluate_head(probe, features[test], fast[test], slow[test], lambdas)
         sweep.append(
@@ -193,14 +215,30 @@ def run_training(
             }
         )
     best = max(sweep, key=lambda row: row["selection_score"])
+    if force_candidate is not None:
+        best = next((row for row in sweep if row["name"] == force_candidate), None)
+        if best is None:
+            raise ValueError(f"Unknown candidate {force_candidate!r}")
     chosen = next(c for c in candidates if c["name"] == best["name"])
     chosen_layers = tuple(chosen["layers"])
     meta = HeadMetadata(
         **base, feature_layers=chosen_layers, hidden_width=chosen["width"], pca_dim=chosen["pca"]
     )
     features = features_for(records, chosen["positions"])
-    head, history = train_head(meta, features[train], labels[train], epochs=epochs, seed=seed)
-    final = evaluate_head(head, features[test], fast[test], slow[test], lambdas)
+    # Train the chosen feature set under both objectives; return the requested one.
+    heads, histories, finals = {}, {}, {}
+    for name in ("supervised", "cdpo"):
+        heads[name], histories[name] = train_head(
+            meta,
+            features[train],
+            labels[train],
+            epochs=epochs,
+            seed=train_seed,
+            objective=name,
+            cdpo=cdpo,
+        )
+        finals[name] = evaluate_head(heads[name], features[test], fast[test], slow[test], lambdas)
+    head, history, final = heads[objective], histories[objective], finals[objective]
     stats_only = next(row for row in sweep if row["name"] == "stats_only")["test"]
     max_probability = records["fast_probability"][test]
     concentration = records["stats"][test, 3]
@@ -218,7 +256,11 @@ def run_training(
         "thinking_hurts_rate": float((fast[test] & ~slow[test]).mean()),
         "candidates": sweep,
         "chosen": best["name"],
+        "forced": force_candidate is not None,
         "chosen_layers": list(chosen_layers),
+        "objective": objective,
+        "train_seed": train_seed,
+        "by_objective": finals,
         "baseline_auroc_max_probability": auroc(max_probability, fast[test]),
         "baseline_auroc_concentration": auroc(concentration, fast[test]),
         "baseline_stats_probe": stats_only,
