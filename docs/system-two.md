@@ -74,6 +74,27 @@ sbatch --array=0-9 --partition=P --account=A scripts/collect.sbatch
 uv run litjev-train-head results/records-*.npz
 ```
 
+## First results (Qwen3.5-4B, 2026-09-21)
+
+1000 MMLU-Pro test questions sampled with `--stride 12` across all 14 categories,
+512 thinking tokens, layers `-1,16,24`. Reported on three held-out categories
+(chemistry, economics, psychology); selection used K-fold over the other eleven.
+
+| Policy | Escalation rate | Accuracy |
+| --- | ---: | ---: |
+| Fast only | 0% | 0.578 |
+| Slow only | 100% | 0.616 |
+| Stats-only head, λ = 0 | 47% | 0.642 |
+| Layer 16 + PCA-64 head, λ = −0.05 | 55% | 0.642 |
+
+Routing AUROC (does the head rank "thinking helps" cases first): stats-only 0.68,
+layer 16 + PCA-64 0.67 after retraining on all training data (0.74 in cross-validation).
+Raw hidden states without the PCA bottleneck overfit at this data size and scored below
+the stats-only floor; whole-set selection on a single validation split chose them anyway,
+which is why selection is now K-fold. Thinking hit the 512-token budget on 98.5% of
+questions, so "slow" here is truncated reasoning. Numbers are from one seed and one
+checkpoint; treat them as a pipeline check, not a benchmark result.
+
 ## What to expect and what is not claimed
 
 - Thinking is autoregressive. A 512-token budget on 27B under Transformers is tens of
