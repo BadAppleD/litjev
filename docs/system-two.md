@@ -47,8 +47,9 @@ think" are needed. Gold labels never enter prompts.
 ```bash
 # 1. Collect records (features + outcomes). Layers are hidden_states indices;
 #    -1 is the final normalized output, 40 is decoder layer 40's output.
+#    Use the --layers=... form: a value starting with "-" is otherwise read as a flag.
 uv run litjev-collect --model Qwen/Qwen3.8-27B --split test --limit 2000 \
-  --layers -1,40,48 --budget 512 --output records-0.npz
+  --layers=-1,40,48 --budget 512 --output records-0.npz
 
 # 2. Layer sweep, train, evaluate on held-out categories, save the head.
 uv run litjev-train-head records-*.npz --output decision-head.safetensors \

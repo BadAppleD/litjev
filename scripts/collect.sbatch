@@ -17,7 +17,7 @@ TASK="${SLURM_ARRAY_TASK_ID:-0}"
 "${UV_BIN:-uv}" run --locked --no-sync litjev-collect \
   --model "${LITJEV_MODEL:?Set LITJEV_MODEL to a Qwen checkpoint path or model ID}" \
   --split "${LITJEV_SPLIT:-test}" \
-  --layers "${LITJEV_LAYERS:--1}" \
+  --layers="${LITJEV_LAYERS:--1}" \
   --budget "${LITJEV_BUDGET:-512}" \
   --offset $((TASK * SHARD)) \
   --limit "$SHARD" \

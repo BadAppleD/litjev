@@ -178,7 +178,11 @@ def collect():
     parser.add_argument("--dataset-revision", default="main")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=1000)
-    parser.add_argument("--layers", default="-1", help="hidden_states indices, e.g. -1,40,48")
+    parser.add_argument(
+        "--layers",
+        default="-1",
+        help="hidden_states indices; write --layers=-1,40,48 (the value starts with '-')",
+    )
     parser.add_argument("--budget", type=int, default=512, help="Thinking tokens per question")
     parser.add_argument("--output", default="head-records.npz")
     args = parser.parse_args()
