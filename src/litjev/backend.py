@@ -11,7 +11,12 @@ import torch
 from transformers.generation import StoppingCriteria, StoppingCriteriaList
 
 from litjev.decision import RawFieldScores
-from litjev.prompting import ANSWER_BOUNDARY, build_decision_messages, question_body
+from litjev.prompting import (
+    ANSWER_BOUNDARY,
+    build_decision_messages,
+    build_thinking_messages,
+    question_body,
+)
 from litjev.slots import SLOT_FORMAT, compile_prefix_slots, compile_slots
 from litjev.vision import VisualState, validate_image
 
@@ -254,18 +259,28 @@ class TransformersScorer:
         def encode(text):
             return self.tokenizer.encode(text, add_special_tokens=False)
 
-        open_ids = encode(self.think_tokens[0])
-        close_ids = encode(self.think_tokens[1])
-        tail_ids = encode(self.think_tokens[1] + ANSWER_BOUNDARY)
-        if not open_ids or not close_ids:
+        open_text, close_text = self.think_tokens
+        close_ids = encode(close_text)
+        tail_ids = encode("\n" + close_text + "\n" + ANSWER_BOUNDARY)
+        if not encode(open_text) or not close_ids:
             raise ValueError("Tokenizer cannot encode the thinking delimiters")
         index = {name: i for i, name in enumerate(schema.names)}
-        prefix = compiled.input_ids[0][: compiled.prefix_length]
         prompts = []
         for name in names:
             i = index[name]
-            body = encode(question_body(schema[name], compiled.candidate_codes[i]) + "\n")
-            prompts.append(prefix + body + open_ids)
+            # The slow prompt is rendered with thinking enabled, so it carries no empty
+            # <think></think> block; Qwen's template then ends the prompt with "<think>\n".
+            text = self.tokenizer.apply_chat_template(
+                build_thinking_messages(
+                    state, question_body(schema[name], compiled.candidate_codes[i])
+                ),
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+            if not text.rstrip().endswith(open_text):
+                text += open_text + "\n"
+            prompts.append(encode(text))
         if max(map(len, prompts)) + budget + len(tail_ids) > self.max_input_tokens:
             raise ValueError("Thinking budget exceeds the input token limit")
         pad = self._pad_id()
@@ -314,6 +329,7 @@ class TransformersScorer:
                     len(sequences[j]),
                     {
                         "method": "slow_thinking_full_input",
+                        "slow_prompt_format": "user_turn_question_thinking_v1",
                         "system": "two",
                         "slot_format": SLOT_FORMAT,
                         "module": "lm_head",

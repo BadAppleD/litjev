@@ -21,7 +21,7 @@ from litjev.heads import (
     outcome_labels,
     train_head,
 )
-from litjev.prompting import ANSWER_BOUNDARY, question_body
+from litjev.prompting import ANSWER_BOUNDARY, build_thinking_messages, question_body
 from litjev.routing import RoutingPolicy, escalation_gain, fast_confidence, should_escalate
 from litjev.schema import Choice, DecisionSchema, Noul, SystemOneRequest
 from litjev.training import run_training
@@ -31,8 +31,10 @@ class CharTokenizer:
     pad_token_id = 0
     eos_token_id = 1
 
-    def apply_chat_template(self, *args, **kwargs):
-        return "prefix"
+    def apply_chat_template(self, messages, **kwargs):
+        # Deterministic stand-in: content joined, with a visible marker for thinking mode.
+        rendered = "|".join(m["content"] for m in messages)
+        return rendered + ("<think>\n" if kwargs.get("enable_thinking") else "|")
 
     def encode(self, text, **kwargs):
         return [ord(char) + 2 for char in text.replace(": ", ":")]
@@ -160,7 +162,6 @@ def test_slow_path_reads_same_boundary_after_thinking():
     compiled = scorer._compile("state", schema)
     slow = scorer.think("state", schema, ("q2", "q1"), budget=5)
     assert tuple(row.name for row in slow) == ("q2", "q1")
-    prefix = compiled.input_ids[0][: compiled.prefix_length]
     with torch.inference_mode():
         for row in slow:
             i = schema.names.index(row.name)
@@ -168,14 +169,15 @@ def test_slow_path_reads_same_boundary_after_thinking():
             assert 0 <= row.generated_tokens <= 5
             thought = tokenizer.encode(row.provenance["thinking_text"])
             assert len(thought) == row.generated_tokens
+            body = question_body(schema[row.name], compiled.candidate_codes[i])
+            prompt = tokenizer.apply_chat_template(
+                build_thinking_messages("state", body), enable_thinking=True
+            )
+            assert prompt.endswith("<think>\n") and "state\n\n" + body in prompt
             sequence = (
-                prefix
-                + tokenizer.encode(
-                    question_body(schema[row.name], compiled.candidate_codes[i]) + "\n"
-                )
-                + tokenizer.encode("<think>")
+                tokenizer.encode(prompt)
                 + thought
-                + tokenizer.encode("</think>" + ANSWER_BOUNDARY)
+                + tokenizer.encode("\n</think>\n" + ANSWER_BOUNDARY)
             )
             assert row.input_tokens == len(sequence)
             full = model(torch.tensor([sequence]), use_cache=False, output_hidden_states=True)

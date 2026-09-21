@@ -21,6 +21,20 @@ def build_decision_messages(state, schema=None):
     ]
 
 
+def build_thinking_messages(state, body):
+    """Slow path: the question joins the state in the user turn and reasoning is allowed."""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Evaluate the state using the question and labeled options. "
+                "Think it through first, then answer with only the option code."
+            ),
+        },
+        {"role": "user", "content": state_text(state) + "\n\n" + body},
+    ]
+
+
 ANSWER_BOUNDARY = "\nAnswer:"
 
 
