@@ -100,6 +100,7 @@ def test_head_roundtrip_and_serving_checks(tmp_path):
     labels = rng.integers(0, 4, size=64)
     head, history = train_head(meta, features, labels, epochs=2, batch_size=16)
     assert len(history) == 2
+    assert {"train_loss", "val_loss"} <= set(history[0])
     probs = head.predict(features[:3])
     assert probs.shape == (3, 4)
     np.testing.assert_allclose(probs.sum(1), 1.0, atol=1e-5)

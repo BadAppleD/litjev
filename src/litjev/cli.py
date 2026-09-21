@@ -267,8 +267,10 @@ def train_head():
             {
                 "chosen_layers": report["chosen_layers"],
                 "auroc_head": report["head"]["auroc_fast_correct"],
+                "auroc_stats_probe": report["baseline_stats_probe"]["auroc_fast_correct"],
                 "auroc_concentration": report["baseline_auroc_concentration"],
                 "auroc_max_probability": report["baseline_auroc_max_probability"],
+                "split_level": report["split_level"],
                 "fast_accuracy": report["fast_accuracy"],
                 "slow_accuracy": report["slow_accuracy"],
                 "output": args.output,

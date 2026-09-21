@@ -70,7 +70,7 @@ class HeadMetadata:
     revision: str
     hidden_size: int
     feature_layers: tuple[int, ...]
-    hidden_width: int = 1024
+    hidden_width: int = 256
     slot_format: str = SLOT_FORMAT
     feature_format: str = FEATURE_FORMAT
     training: dict = field(default_factory=dict)
@@ -154,11 +154,18 @@ def train_head(
     epochs=30,
     batch_size=256,
     learning_rate=1e-3,
-    weight_decay=1e-2,
+    weight_decay=5e-2,
+    dropout=0.3,
+    validation_fraction=0.15,
+    patience=6,
     seed=0,
     device="cpu",
 ):
-    """Supervised four-class training; the backbone is never touched."""
+    """Supervised four-class training with early stopping; the backbone is never touched.
+
+    A slice of the training set is held out for validation; the returned head is the
+    epoch with the lowest validation loss. History rows carry train and validation loss.
+    """
     torch.manual_seed(seed)
     matrix = torch.as_tensor(np.asarray(features, dtype=np.float32))
     targets = torch.as_tensor(np.asarray(labels, dtype=np.int64))
@@ -166,25 +173,46 @@ def train_head(
         raise ValueError("features must be [N, input_dim]")
     if len(matrix) != len(targets):
         raise ValueError("features and labels length mismatch")
-    head = DecisionHead(metadata).to(device)
-    head.fit_normalizer(matrix)
-    counts = torch.bincount(targets, minlength=OUTCOME_DIM).float().clamp_min(1)
+    generator = torch.Generator().manual_seed(seed)
+    order = torch.randperm(len(matrix), generator=generator)
+    n_val = int(len(matrix) * validation_fraction) if len(matrix) >= 8 else 0
+    val_index, train_index = order[:n_val], order[n_val:]
+    head = DecisionHead(metadata, dropout=dropout).to(device)
+    head.fit_normalizer(matrix[train_index])
+    counts = torch.bincount(targets[train_index], minlength=OUTCOME_DIM).float().clamp_min(1)
     class_weight = (counts.sum() / (OUTCOME_DIM * counts)).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=learning_rate, weight_decay=weight_decay)
     loss_fn = nn.CrossEntropyLoss(weight=class_weight)
-    history = []
+    history, best_state, best_loss, stale = [], None, float("inf"), 0
     for _ in range(epochs):
         head.train()
-        order = torch.randperm(len(matrix))
+        shuffled = train_index[torch.randperm(len(train_index), generator=generator)]
         total = 0.0
-        for start in range(0, len(matrix), batch_size):
-            index = order[start : start + batch_size]
+        for start in range(0, len(shuffled), batch_size):
+            index = shuffled[start : start + batch_size]
             optimizer.zero_grad()
             loss = loss_fn(head(matrix[index].to(device)), targets[index].to(device))
             loss.backward()
             optimizer.step()
             total += loss.item() * len(index)
-        history.append(total / len(matrix))
+        head.eval()
+        row = {"train_loss": total / max(len(shuffled), 1)}
+        if n_val:
+            with torch.no_grad():
+                val_loss = loss_fn(
+                    head(matrix[val_index].to(device)), targets[val_index].to(device)
+                ).item()
+            row["val_loss"] = val_loss
+            if val_loss < best_loss - 1e-4:
+                best_loss, stale = val_loss, 0
+                best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
+            else:
+                stale += 1
+        history.append(row)
+        if n_val and stale >= patience:
+            break
+    if best_state is not None:
+        head.load_state_dict(best_state)
     head.eval()
     return head, history
 

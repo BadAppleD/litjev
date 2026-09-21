@@ -88,9 +88,16 @@ def run_training(
         "revision": metadata["revision"],
         "hidden_size": int(metadata["hidden_size"]),
     }
+    # Stats-only probe: the floor that hidden states must beat to be worth carrying.
+    stats_meta = HeadMetadata(**base, feature_layers=(), hidden_width=32)
+    stats_features = features_for(records, ())
+    stats_probe, _ = train_head(
+        stats_meta, stats_features[train], labels[train], epochs=probe_epochs, seed=seed
+    )
+    stats_only = evaluate_head(stats_probe, stats_features[test], fast[test], slow[test], lambdas)
     sweep = []
     for position, layer in enumerate(layers):
-        meta = HeadMetadata(**base, feature_layers=(layer,), hidden_width=256)
+        meta = HeadMetadata(**base, feature_layers=(layer,))
         features = features_for(records, (position,))
         probe, _ = train_head(meta, features[train], labels[train], epochs=probe_epochs, seed=seed)
         result = evaluate_head(probe, features[test], fast[test], slow[test], lambdas)
@@ -120,6 +127,7 @@ def run_training(
         "chosen_layers": list(chosen_layers),
         "baseline_auroc_max_probability": auroc(max_probability, fast[test]),
         "baseline_auroc_concentration": auroc(concentration, fast[test]),
+        "baseline_stats_probe": stats_only,
         "head": final,
         "loss_history": history,
     }
