@@ -1,0 +1,50 @@
+% Architecture figure. Coordinates in mm; the drawing spans x = 1..137, inside the 139.7mm text width.
+\begin{tikzpicture}[
+  x=1mm, y=1mm, font=\footnotesize,
+  box/.style={draw=frozen, rounded corners=2pt, minimum height=8mm, inner sep=3pt, align=center, text width=#1},
+  tbox/.style={draw=trained, line width=1pt, fill=trainedfill, rounded corners=2pt, minimum height=8mm, inner sep=3pt, align=center, text width=#1},
+  arr/.style={-{Stealth[length=1.8mm]}, draw=frozen},
+  tarr/.style={-{Stealth[length=1.8mm]}, draw=trained, line width=1pt},
+  lab/.style={font=\scriptsize, text=frozen, inner sep=1pt},
+]
+% ---- row 1: fast path
+\node[box=17mm] (req) at (10,0) {state $s$\\$+\,N$ questions};
+\node[box=19mm] (pre) at (34,0) {prefill $s$\\(forward 1)};
+\node[box=14mm] (cache) at (55,0) {cache\\$\times N$};
+\node[box=33mm, minimum height=16mm] (br) at (87,0) {$q_1$ + codes\,\dots\,\texttt{Answer:}\\$q_2$ + codes\,\dots\,\texttt{Answer:}\\$\vdots$\\$q_N$ + codes\,\dots\,\texttt{Answer:}};
+\node[circle, draw=frozen, minimum size=7mm, inner sep=0pt] (h) at (118,0) {$\vh_i$};
+\draw[arr] (req) -- (pre);
+\draw[arr] (pre) -- (cache);
+\draw[arr] (cache) -- (br);
+\node[lab] at (87,10.5) {forward 2: $N$ branches, one batch};
+\draw[arr] (br) -- node[lab, above] {readout} (h);
+\node[lab, align=center] at (121,9.5) {hidden state at\\the \texttt{Answer:} colon};
+
+% ---- row 2: the two heads
+\node[box=31mm] (lm) at (87,-24) {\texttt{lm\_head} (frozen)\\slice $K$ candidates, softmax};
+\node[tbox=31mm] (dh) at (121,-24) {\textbf{decision head} (trained)\\$[\mW^{\!\top}\tilde\vh^{(\ell)};\tilde\vs]\!\to\!\text{MLP}\!\to\!\vo\in\Delta^4$};
+\draw[arr] (h.south) -- (118,-8) -| (lm.north);
+\draw[tarr] (h.south) -- (118,-8) -| (dh.north);
+
+% ---- row 3: fast answer and gate
+\node[box=31mm] (fa) at (87,-42) {fast answer $\vp_i$\\choice / score / noul};
+\node[tbox=18mm, shape=diamond, aspect=2.4, inner sep=0pt, text width=16mm] (gate) at (121,-43) {$\gain_i>\lambda$?};
+\draw[arr] (lm) -- (fa);
+\draw[tarr] (dh) -- node[lab, right, align=left] {$c_i=\vo_1{+}\vo_2$\\$\gain_i=\vo_3{-}\vo_2$} (gate);
+
+% ---- row 4: response and slow path (tops aligned at y = -55)
+\node[box=25mm, minimum height=18mm, anchor=north] (resp) at (16,-55) {typed response\\$\{\text{key},\ \vp,\ c_i\}$\\{\scriptsize system: one $|$ two}};
+\node[draw=frozen, dashed, fill=slowfill, rounded corners=2pt, align=left, text width=68mm, inner sep=4pt, anchor=north] (slow) at (81,-55)
+  {\textbf{slow path} (backbone frozen)\\
+   1.\ re-render the prompt with thinking enabled\\
+   2.\ generate up to $B$ thinking tokens\\
+   3.\ append \texttt{Answer:}, read the same $K$ logits};
+\draw[tarr] (gate.south) -- (121,-51) -| node[lab, above, pos=0.25] {yes: escalate} (104,-51) -- (104,-55);
+\node[lab, anchor=west] at (124,-51) {no: keep $\vp_i$};
+\draw[arr] (fa.west) -- (56,-42) -| node[lab, above, pos=0.3] {not escalated} (resp.north);
+\draw[arr] (slow.west) -- node[lab, above, font=\tiny] {slow answer} (resp.east);
+
+% ---- legend, anchored below the lower row
+\node[lab, align=left, text width=128mm, anchor=north west] at ($(resp.north west |- slow.south)+(0,-3)$)
+  {Grey: backbone as shipped, weights frozen. \textcolor{trained}{Orange}: the only trained component and its routing rule. Dashed: runs only for escalated questions. The head reads $\vh_i$, which the fast answer needs anyway, so deciding whether to think costs no tokens.};
+\end{tikzpicture}

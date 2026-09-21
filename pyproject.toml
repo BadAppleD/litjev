@@ -42,6 +42,8 @@ litjev = "litjev.cli:serve"
 litjev-serve = "litjev.cli:serve"
 litjev-mmlu = "litjev.cli:mmlu"
 litjev-calibrate = "litjev.cli:calibrate"
+litjev-collect = "litjev.cli:collect"
+litjev-train-head = "litjev.cli:train_head"
 litjev-play = "litjev.games.cli:play"
 litjev-film = "litjev.games.cli:film"
 

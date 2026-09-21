@@ -9,15 +9,35 @@ from time import perf_counter
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from litjev.decision import DecisionResponse
 from litjev.prompting import state_text
+from litjev.routing import RoutingPolicy
 from litjev.schema import SystemOneRequest
 from litjev.vision import MAX_BASE64_LENGTH, VisualState, decode_image
 
 
 class DebugRequest(SystemOneRequest):
+    image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
+
+
+class Routing(BaseModel):
+    """LitJev extension: when the decision head expects thinking to pay off, think."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    lambda_: float = Field(default=0.0, alias="lambda")
+    budget: int = Field(default=512, ge=1, le=8192)
+
+    def to_policy(self):
+        return RoutingPolicy(self.lambda_, self.budget)
+
+
+class SystemTwoRequest(SystemOneRequest):
+    routing: Routing | None = None
+
+
+class SystemTwoDebugRequest(SystemTwoRequest):
     image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
 
 
@@ -40,7 +60,7 @@ def create_app(engine_factory):
     def example():
         return FileResponse(static_dir / "example.json")
 
-    def evaluate(request, image=None):
+    def evaluate(request, image=None, routing=None):
         try:
             started = perf_counter()
             schema = request.to_schema()
@@ -55,7 +75,11 @@ def create_app(engine_factory):
                     "Requested model is not loaded; use 'litjev' or the loaded model ID"
                 )
             ready = perf_counter()
-            evaluation = engine.evaluate(state, schema)
+            evaluation = (
+                engine.evaluate(state, schema)
+                if routing is None
+                else engine.evaluate(state, schema, routing)
+            )
             finished = perf_counter()
             result = asdict(evaluation)
             result["diagnostics"]["timing"] = {
@@ -64,7 +88,7 @@ def create_app(engine_factory):
                 "total_seconds": finished - started,
             }
             return result
-        except ValueError as error:
+        except (ValueError, TypeError) as error:
             raise HTTPException(422, str(error)) from error
 
     @app.get("/health")
@@ -78,5 +102,17 @@ def create_app(engine_factory):
     @app.post("/v1/systemone/debug")
     def systemone_debug(request: DebugRequest):
         return evaluate(request, request.image)
+
+    def routing_of(request):
+        # Without a routing block the server's default policy applies.
+        return request.routing.to_policy() if request.routing is not None else None
+
+    @app.post("/v1/systemtwo", response_model=DecisionResponse)
+    def systemtwo(request: SystemTwoRequest):
+        return evaluate(request, routing=routing_of(request))["result"]
+
+    @app.post("/v1/systemtwo/debug")
+    def systemtwo_debug(request: SystemTwoDebugRequest):
+        return evaluate(request, request.image, routing_of(request))
 
     return app

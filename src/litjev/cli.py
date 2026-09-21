@@ -23,19 +23,39 @@ def serve():
     parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--calibration")
+    parser.add_argument("--decision-head", help="Trained head (.safetensors) for /v1/systemtwo")
+    parser.add_argument("--lambda", dest="lambda_", type=float, default=0.0)
+    parser.add_argument("--think-budget", type=int, default=0, help="0 disables default routing")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
     def factory():
+        from litjev.heads import DecisionHead
+        from litjev.routing import RoutingPolicy
+
         profile = CalibrationProfile.load(args.calibration) if args.calibration else None
         if profile and profile.model_id != args.model:
             raise ValueError("Calibration profile model does not match serving model")
-        settings = ModelSettings(args.model, args.revision, args.device_map, args.dtype)
+        head = DecisionHead.load(args.decision_head) if args.decision_head else None
+        layers = ()
+        if head is not None:
+            head.metadata.check_serving(args.model, args.revision)
+            layers = head.metadata.feature_layers
+        settings = ModelSettings(
+            args.model, args.revision, args.device_map, args.dtype, feature_layers=layers
+        )
+        scorer = TransformersScorer.load(settings)
+        if head is not None:
+            if head.metadata.hidden_size != scorer.hidden_size:
+                raise ValueError("Decision head hidden size does not match the model")
+            head.to(scorer.model.get_input_embeddings().weight.device)
         return SchemaDecisionEngine(
-            TransformersScorer.load(settings),
+            scorer,
             profile.temperature if profile else 1.0,
             args.model,
             profile is not None,
+            head=head,
+            routing=RoutingPolicy(args.lambda_, args.think_budget),
         )
 
     # One process owns one model; concurrent forwards are serialized in the backend.
@@ -139,3 +159,127 @@ def calibrate():
     profile = TemperatureCalibrator.fit(logits, np.array([r["label"] for r in rows]), args.model)
     profile.save(args.output)
     print(json.dumps({"temperature": profile.temperature, "nll": profile.nll_after}))
+
+
+def collect():
+    from datasets import load_dataset
+
+    from litjev.backend import ModelSettings, TransformersScorer
+    from litjev.collect import collect_batch, save_records
+    from litjev.heads import parse_feature_layers
+    from litjev.mmlu import DATASET_ID, convert_rows, ten_question_batches
+
+    parser = argparse.ArgumentParser(description="Collect fast/slow records for the decision head")
+    parser.add_argument("--model", default="Qwen/Qwen3.8-27B")
+    parser.add_argument("--revision", default="main")
+    parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
+    parser.add_argument("--device-map", default="auto")
+    parser.add_argument("--split", choices=["validation", "test"], default="test")
+    parser.add_argument("--dataset-revision", default="main")
+    parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=1000)
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="Take every k-th question so a small sample spans all categories",
+    )
+    parser.add_argument(
+        "--layers",
+        default="-1",
+        help="hidden_states indices; write --layers=-1,40,48 (the value starts with '-')",
+    )
+    parser.add_argument("--budget", type=int, default=512, help="Thinking tokens per question")
+    parser.add_argument("--output", default="head-records.npz")
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=5,
+        help="Rewrite the output file every k batches so a timeout keeps what was collected",
+    )
+    args = parser.parse_args()
+    if args.limit <= 0 or args.offset < 0 or args.budget <= 0 or args.stride <= 0:
+        parser.error("--limit, --budget and --stride must be positive, --offset non-negative")
+    layers = parse_feature_layers(args.layers)
+    dataset = load_dataset(DATASET_ID, revision=args.dataset_revision, split=args.split)
+    questions, labels, skipped = convert_rows(dataset)
+    categories = {str(row.get("question_id", "")): str(row.get("category", "")) for row in dataset}
+    questions = questions[args.offset :: args.stride][: args.limit]
+    if not questions:
+        parser.error("No questions selected")
+    settings = ModelSettings(
+        args.model, args.revision, args.device_map, args.dtype, feature_layers=layers
+    )
+    scorer = TransformersScorer.load(settings)
+    metadata = {
+        "model_id": args.model,
+        "revision": args.revision,
+        "hidden_size": scorer.hidden_size,
+        "feature_layers": list(layers),
+        "budget": args.budget,
+        "dataset": DATASET_ID,
+        "dataset_revision": args.dataset_revision,
+        "split": args.split,
+        "offset": args.offset,
+        "stride": args.stride,
+        "skipped": len(skipped),
+    }
+    records = []
+    started = time.perf_counter()
+    for batches, (batch, valid_ids) in enumerate(ten_question_batches(questions), start=1):
+        records.extend(collect_batch(scorer, batch, valid_ids, labels, args.budget, categories))
+        print(f"{len(records)}/{len(questions)} records, {time.perf_counter() - started:.0f}s")
+        if args.checkpoint_every > 0 and batches % args.checkpoint_every == 0:
+            save_records(args.output, records, {**metadata, "partial": True})
+    save_records(args.output, records, metadata)
+    fast = sum(r.fast_correct for r in records) / len(records)
+    slow = sum(r.slow_correct for r in records) / len(records)
+    print(json.dumps({"records": len(records), "fast_accuracy": fast, "slow_accuracy": slow}))
+
+
+def train_head():
+    from litjev.collect import load_records
+    from litjev.training import DEFAULT_LAMBDAS, run_training
+
+    parser = argparse.ArgumentParser(description="Train the decision head on collected records")
+    parser.add_argument("inputs", nargs="+")
+    parser.add_argument("--output", default="decision-head.safetensors")
+    parser.add_argument("--report", default="decision-head-report.json")
+    parser.add_argument("--holdout-fraction", type=float, default=0.25)
+    parser.add_argument("--select-layers", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--probe-epochs", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--lambdas", default=",".join(map(str, DEFAULT_LAMBDAS)))
+    args = parser.parse_args()
+    if not 0 < args.holdout_fraction < 1:
+        parser.error("--holdout-fraction must be in (0, 1)")
+    records, metadata = load_records(args.inputs)
+    head, report = run_training(
+        records,
+        metadata,
+        args.holdout_fraction,
+        args.select_layers,
+        args.epochs,
+        args.probe_epochs,
+        args.seed,
+        tuple(float(x) for x in args.lambdas.split(",")),
+    )
+    head.save(args.output)
+    Path(args.report).write_text(json.dumps(report, indent=2) + "\n")
+    print(
+        json.dumps(
+            {
+                "chosen": report["chosen"],
+                "chosen_layers": report["chosen_layers"],
+                "auroc_head": report["head"]["auroc_fast_correct"],
+                "auroc_stats_probe": report["baseline_stats_probe"]["auroc_fast_correct"],
+                "auroc_concentration": report["baseline_auroc_concentration"],
+                "auroc_max_probability": report["baseline_auroc_max_probability"],
+                "split_level": report["split_level"],
+                "fast_accuracy": report["fast_accuracy"],
+                "slow_accuracy": report["slow_accuracy"],
+                "output": args.output,
+            }
+        )
+    )

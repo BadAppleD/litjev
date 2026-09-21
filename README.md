@@ -129,6 +129,9 @@ between the two, since LitJev runs a different model; only the contract is share
   screenshots, with a `/film` replay viewer. See [benchmarking](docs/benchmarking.md).
 - **Calibration** — optional post-hoc temperature fitting. See
   [how it works](docs/how-it-works.md#calibration).
+- **System Two (experimental)** — `POST /v1/systemtwo` lets a small trained decision
+  head route individual questions to the backbone's own slow thinking when it expects
+  that to pay off. The backbone stays frozen. See [System Two](docs/system-two.md).
 
 ## Documentation
 
