@@ -112,6 +112,20 @@ def test_head_roundtrip_and_serving_checks(tmp_path):
     loaded.metadata.check_serving("m", "r")
     with pytest.raises(ValueError):
         loaded.metadata.check_serving("other")
+    # PCA bottleneck: whitened components replace the raw hidden block, stats pass through.
+    pca_meta = HeadMetadata(
+        "m", "r", hidden_size=4, feature_layers=(-1, 3), pca_dim=3, hidden_width=8
+    )
+    pca_head, _ = train_head(pca_meta, features, labels, epochs=2, batch_size=16)
+    assert pca_head.projection.shape == (8, 3)
+    assert pca_meta.model_dim == 3 + STATS_DIM
+    pca_head.save(tmp_path / "pca.safetensors")
+    reloaded = DecisionHead.load(tmp_path / "pca.safetensors")
+    np.testing.assert_allclose(
+        reloaded.predict(features[:2]), pca_head.predict(features[:2]), atol=1e-6
+    )
+    with pytest.raises(ValueError):
+        DecisionHead(HeadMetadata("m", "r", hidden_size=4, feature_layers=(-1,), pca_dim=9))
     with pytest.raises(ValueError):
         loaded.metadata.check_serving("m", "different-revision")
 
@@ -355,18 +369,23 @@ def test_collect_save_load_and_train(tmp_path):
     rng = np.random.default_rng(0)
     loaded["fast_correct"] = rng.random(12) < 0.6
     loaded["slow_correct"] = rng.random(12) < 0.7
-    head, report = run_training(loaded, meta, holdout_fraction=0.5, epochs=2, probe_epochs=1)
+    head, report = run_training(
+        loaded, meta, holdout_fraction=0.5, epochs=2, probe_epochs=1, selection_folds=2, pca_dim=2
+    )
     assert report["split_level"] == "category"
     assert report["categories_seen"] == ["law", "math"]
-    assert report["chosen"] in ("stats_only", "layer_-1", "layer_1")
-    assert [c["name"] for c in report["candidates"]] == ["stats_only", "layer_-1", "layer_1"]
+    names = [c["name"] for c in report["candidates"]]
+    assert names == ["stats_only", "layer_-1", "layer_-1_pca2", "layer_1", "layer_1_pca2"]
+    assert report["chosen"] in names
     assert all({"validation", "test", "selection_score"} <= set(c) for c in report["candidates"])
+    assert all(c["validation"]["folds"] == 2 for c in report["candidates"])
     # A single-category collection cannot hold out a category; fall back to examples.
     single = {**loaded, "category": np.array(["law"] * 12)}
-    _, fallback = run_training(single, meta, holdout_fraction=0.5, epochs=1, probe_epochs=1)
+    _, fallback = run_training(
+        single, meta, holdout_fraction=0.5, epochs=1, probe_epochs=1, selection_folds=2, pca_dim=2
+    )
     assert fallback["split_level"] == "example"
     assert 0 < fallback["test_count"] < 12
-    assert len(report["candidates"]) == 3
     assert 0 < report["train_count"] < 12
     assert set(report["head"]) == {"auroc_fast_correct", "auroc_gain_vs_helps", "curve"}
     assert head.metadata.training["chosen_layers"] == report["chosen_layers"]

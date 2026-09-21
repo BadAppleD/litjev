@@ -71,13 +71,23 @@ class HeadMetadata:
     hidden_size: int
     feature_layers: tuple[int, ...]
     hidden_width: int = 256
+    pca_dim: int = 0
     slot_format: str = SLOT_FORMAT
     feature_format: str = FEATURE_FORMAT
     training: dict = field(default_factory=dict)
 
     @property
+    def hidden_dim(self):
+        return self.hidden_size * len(self.feature_layers)
+
+    @property
     def input_dim(self):
-        return self.hidden_size * len(self.feature_layers) + STATS_DIM
+        return self.hidden_dim + STATS_DIM
+
+    @property
+    def model_dim(self):
+        """Width the MLP actually sees: PCA components (if any) plus the stats."""
+        return (self.pca_dim if self.pca_dim else self.hidden_dim) + STATS_DIM
 
     def check_serving(self, model_id, revision=None):
         if self.model_id != model_id:
@@ -95,22 +105,44 @@ class DecisionHead(nn.Module):
         super().__init__()
         self.metadata = metadata
         dim = metadata.input_dim
+        if metadata.pca_dim < 0 or metadata.pca_dim > metadata.hidden_dim:
+            raise ValueError("pca_dim must be between 0 and the hidden feature width")
         self.register_buffer("mean", torch.zeros(dim))
         self.register_buffer("std", torch.ones(dim))
+        if metadata.pca_dim:
+            # Whitened principal directions of the standardized hidden features.
+            self.register_buffer("projection", torch.zeros(metadata.hidden_dim, metadata.pca_dim))
         self.net = nn.Sequential(
-            nn.Linear(dim, metadata.hidden_width),
+            nn.Linear(metadata.model_dim, metadata.hidden_width),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(metadata.hidden_width, OUTCOME_DIM),
         )
 
+    def _reduce(self, standardized):
+        if not self.metadata.pca_dim:
+            return standardized
+        split = self.metadata.hidden_dim
+        components = standardized[:, :split] @ self.projection
+        return torch.cat([components, standardized[:, split:]], dim=1)
+
     def forward(self, features):
-        return self.net((features - self.mean) / self.std)
+        return self.net(self._reduce((features - self.mean) / self.std))
 
     def fit_normalizer(self, features):
         matrix = torch.as_tensor(np.asarray(features, dtype=np.float32))
         self.mean.copy_(matrix.mean(0))
         self.std.copy_(matrix.std(0).clamp_min(1e-6))
+        if self.metadata.pca_dim:
+            split = self.metadata.hidden_dim
+            hidden = ((matrix - self.mean) / self.std)[:, :split]
+            rank = min(self.metadata.pca_dim, len(hidden) - 1, split)
+            if rank < 1:
+                raise ValueError("Not enough examples to fit the PCA bottleneck")
+            _, singular, right = torch.linalg.svd(hidden, full_matrices=False)
+            scale = (singular[:rank] / math.sqrt(max(len(hidden) - 1, 1))).clamp_min(1e-6)
+            self.projection.zero_()
+            self.projection[:, :rank] = right[:rank].T / scale
 
     @torch.no_grad()
     def predict(self, features):
@@ -135,6 +167,7 @@ class DecisionHead(nn.Module):
             raise ValueError("Not a LitJev decision head file")
         data = json.loads(raw["litjev"])
         data["feature_layers"] = tuple(data["feature_layers"])
+        data.setdefault("pca_dim", 0)
         head = cls(HeadMetadata(**data))
         head.load_state_dict(load_file(str(path)))
         return head.to(device).eval()
