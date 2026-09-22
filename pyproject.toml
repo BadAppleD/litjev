@@ -52,7 +52,8 @@ packages = ["src/litjev"]
 include = [
   "/src", "/tests", "/examples", "/docs", "/scripts",
   "/README.md", "/CONTRIBUTING.md", "/SECURITY.md",
-  "/pyproject.toml", "/uv.lock", "/LICENSE", "/NOTICE", "/CITATION.cff",
+  "/pyproject.toml", "/uv.lock", "/requirements-qwen38-cu130.in",
+  "/requirements-qwen38-cu130.lock", "/LICENSE", "/NOTICE", "/CITATION.cff",
   "/THIRD_PARTY_LICENSES", "/THIRD_PARTY_NOTICES.md",
 ]
 exclude = ["**/node_modules", "**/__pycache__"]

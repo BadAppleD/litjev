@@ -1,4 +1,7 @@
 .venv/
+.venv-qwen38/
+.cache-qwen38/
+models/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

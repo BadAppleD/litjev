@@ -21,10 +21,12 @@ class DebugRequest(SystemOneRequest):
     image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
 
 
-def create_app(engine_factory):
+def create_app(engine_factory, *, eager_load=False):
     app = FastAPI(title="LitJev System One")
     get_engine = lru_cache(maxsize=1)(engine_factory)
     load_lock = Lock()
+    if eager_load:
+        get_engine()
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 

@@ -40,6 +40,26 @@ downloads and loads the model, which can take several minutes. Use
 `--model /path/to/checkpoint` for a local checkpoint and `--device-map cuda:0` to pin
 a GPU. Not yet published to PyPI; the commands above run this checkout.
 
+### Qwen3.8 FP8 on CUDA 13 / SM120
+
+On a Linux x86_64 host with `uv`, Git, a C++ compiler, the CUDA 13.x toolkit,
+and an SM120 GPU:
+
+```bash
+scripts/setup_qwen38_fp8.sh
+```
+
+This creates `.venv-qwen38`, installs the hashed CUDA 13 dependency lock,
+builds and caches `causal-conv1d` for SM120 from a pinned source commit,
+downloads the model at a pinned Hugging Face revision, verifies its files, and
+runs the FP8 loading regression test. Set `LITJEV_ENV_DIR`,
+`LITJEV_CACHE_DIR`, or `LITJEV_MODEL_DIR` to override output locations. Use
+`--skip-model` when the checkpoint is already managed separately.
+
+To download and verify the pinned checkpoint on another machine first, run
+`LITJEV_MODEL_DIR=/path/to/model scripts/download_qwen38_fp8.sh`, transfer that
+directory, then set the same path and run the setup script with `--skip-model`.
+
 ## Using the API
 
 LitJev uses **exactly the schema defined in the Jev documentation**: the same

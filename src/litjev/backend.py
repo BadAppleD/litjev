@@ -29,7 +29,7 @@ class TransformersScorer:
         self.processor = processor
 
     @classmethod
-    def load(cls, settings: ModelSettings):
+    def load(cls, settings: ModelSettings, *, eager_kernels: bool = False):
         from transformers import (
             AutoConfig,
             AutoModelForCausalLM,
@@ -39,15 +39,38 @@ class TransformersScorer:
         )
 
         config = AutoConfig.from_pretrained(settings.model_id, revision=settings.revision)
+        quantization = getattr(config, "quantization_config", {})
+        quant_method = (
+            quantization.get("quant_method") if isinstance(quantization, dict)
+            else getattr(quantization, "quant_method", None)
+        )
+        if config.model_type == "qwen3_5" and quant_method == "fp8":
+            # Dense Qwen has gate_proj, not MoE gate. Transformers prefix-matches
+            # stale .mlp.gate exclusions and otherwise drops gate_proj FP8 scales.
+            exclusions = (
+                quantization if isinstance(quantization, dict) else vars(quantization)
+            )
+            exclusions["modules_to_not_convert"] = [
+                name for name in exclusions.get("modules_to_not_convert") or []
+                if not name.endswith(".mlp.gate")
+            ]
         loader = (
             AutoModelForImageTextToText if config.model_type == "qwen3_5" else AutoModelForCausalLM
         )
         model = loader.from_pretrained(
             settings.model_id,
+            config=config,
             revision=settings.revision,
             dtype=getattr(torch, settings.dtype),
             device_map=settings.device_map,
+            allow_all_kernels=True,
         )
+        if eager_kernels and quant_method == "fp8":
+            from transformers.integrations.finegrained_fp8 import load_finegrained_fp8_kernel
+            from transformers.integrations.hub_kernels import allow_all_hub_kernels
+
+            with allow_all_hub_kernels():
+                load_finegrained_fp8_kernel()
         tokenizer = AutoTokenizer.from_pretrained(settings.model_id, revision=settings.revision)
         processor = (
             AutoProcessor.from_pretrained(settings.model_id, revision=settings.revision)
@@ -57,7 +80,10 @@ class TransformersScorer:
         return cls(model, tokenizer, settings.max_input_tokens, processor)
 
     def score(self, state, schema):
-        with self.lock, torch.inference_mode():
+        from transformers.integrations.hub_kernels import allow_all_hub_kernels
+
+        # FP8 hub kernels load lazily after model initialization.
+        with self.lock, torch.inference_mode(), allow_all_hub_kernels():
             return self._score(state, schema)
 
     def _compile(self, state, schema):

@@ -23,7 +23,9 @@ def serve():
     parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--calibration")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--eager-load", action="store_true")
     args = parser.parse_args()
 
     def factory():
@@ -32,14 +34,19 @@ def serve():
             raise ValueError("Calibration profile model does not match serving model")
         settings = ModelSettings(args.model, args.revision, args.device_map, args.dtype)
         return SchemaDecisionEngine(
-            TransformersScorer.load(settings),
+            TransformersScorer.load(settings, eager_kernels=args.eager_load),
             profile.temperature if profile else 1.0,
             args.model,
             profile is not None,
         )
 
     # One process owns one model; concurrent forwards are serialized in the backend.
-    uvicorn.run(create_app(factory), host="127.0.0.1", port=args.port, workers=1)
+    uvicorn.run(
+        create_app(factory, eager_load=args.eager_load),
+        host=args.host,
+        port=args.port,
+        workers=1,
+    )
 
 
 def mmlu():
