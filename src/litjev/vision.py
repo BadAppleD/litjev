@@ -11,12 +11,14 @@ from PIL import Image, UnidentifiedImageError
 MAX_IMAGE_BYTES = 4_000_000
 MAX_IMAGE_PIXELS = 1_048_576
 MAX_BASE64_LENGTH = ((MAX_IMAGE_BYTES + 2) // 3) * 4 + 32
+MAX_TOTAL_BASE64_LENGTH = MAX_BASE64_LENGTH * 2
 
 
 @dataclass(frozen=True)
 class VisualState:
     text: str
     image: Image.Image
+    reference_image: Image.Image | None = None
 
 
 def validate_image(image):

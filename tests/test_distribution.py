@@ -1,6 +1,5 @@
 """Keep public examples and package branding aligned with the runnable API."""
 
-import json
 import tomllib
 from pathlib import Path
 
@@ -30,7 +29,9 @@ def test_public_package_metadata_and_bundled_frontend():
     client = TestClient(create_app(lambda: None))
     assert "LitJev" in client.get("/").text
     assert client.get("/static/app.js").status_code == 200
-    assert json.loads(client.get("/health").text)["model_loaded"] is False
+    health = client.get("/health").json()
+    assert health["model_loaded"] is False
+    assert health["capabilities"]["reference_image"] is True
 
 
 def test_attribution_and_citation_are_present():

@@ -95,11 +95,28 @@ class TransformersScorer:
             if self.processor is None or self.model.config.model_type != "qwen3_5":
                 raise ValueError("Image decisions require a Qwen qwen3_5 model and processor")
             validate_image(state.image)
+            if state.reference_image is not None:
+                validate_image(state.reference_image)
             messages = build_decision_messages(state.text, schema)
-            messages[-1]["content"] = [
-                {"type": "text", "text": state.text},
-                {"type": "image", "image": state.image.convert("RGB")},
-            ]
+            content = [{"type": "text", "text": state.text}]
+            if state.reference_image is not None:
+                content.extend(
+                    [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Reference image: identity reference; crop scale is not distance."
+                            ),
+                        },
+                        {"type": "image", "image": state.reference_image.convert("RGB")},
+                        {
+                            "type": "text",
+                            "text": "Current image: current position and composition.",
+                        },
+                    ]
+                )
+            content.append({"type": "image", "image": state.image.convert("RGB")})
+            messages[-1]["content"] = content
             inputs = self.processor.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -154,10 +171,10 @@ class TransformersScorer:
         positions = positions[None, :].expand(len(schema), -1)
         if isinstance(state, VisualState):
             # Image patches consume sequence slots but have 3-D rotary coordinates.
-            # Continue after the image prefix's M-RoPE extent, not its token count.
+            # Continue after the full image prefix's M-RoPE extent, not its token count.
             delta = self.model.model.rope_deltas
             if delta is None or delta.shape[0] != 1:
-                raise RuntimeError("Missing single-image-prefix M-RoPE state")
+                raise RuntimeError("Missing image-prefix M-RoPE state")
             positions = (positions + delta.to(device))[None, :, :].expand(3, -1, -1)
         output = self.model(
             input_ids=ids,

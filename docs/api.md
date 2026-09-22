@@ -67,7 +67,16 @@ Its envelope is `{result, diagnostics}`: `result` is the standard response;
 `diagnostics` holds `fields.*.{logits, probabilities, max_probability, provenance}`,
 `forward_calls`, `confidence_method`, `calibration_fitted`, and `timing`.
 The playground and visual games use this extension. Only the debug API accepts an
-optional base64 `image` field. `GET /health` stays lightweight.
+optional base64 `image` field for the current view. It also accepts an optional
+`reference_image` field, but only when `image` is present. Both fields accept
+base64 PNG/JPEG data URLs (or raw base64); each image is checked for the per-image
+byte and pixel limits, and the combined request remains bounded. The reference
+image is sent first as an identity reference; its crop scale is not treated as a
+distance cue. The `image` field is sent second as the current position and
+composition. Both images are processed in one multimodal prefix, with the same
+cached branch and M-RoPE continuation as the single-image path.
+`GET /health` stays lightweight and reports
+`capabilities.reference_image=true` when this extension is available.
 
 The playground displays probability bars, JSON, logit provenance, and timing.
 `model_setup_seconds` includes first-use loading; `decision_seconds` includes

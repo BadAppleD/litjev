@@ -9,16 +9,33 @@ from time import perf_counter
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from litjev.decision import DecisionResponse
 from litjev.prompting import state_text
 from litjev.schema import SystemOneRequest
-from litjev.vision import MAX_BASE64_LENGTH, VisualState, decode_image
+from litjev.vision import (
+    MAX_BASE64_LENGTH,
+    MAX_TOTAL_BASE64_LENGTH,
+    VisualState,
+    decode_image,
+)
 
 
 class DebugRequest(SystemOneRequest):
     image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
+    reference_image: str | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
+
+    @model_validator(mode="after")
+    def validate_images(self):
+        if self.reference_image is not None and self.image is None:
+            raise ValueError("reference_image requires image")
+        if (
+            sum(len(value or "") for value in (self.image, self.reference_image))
+            > MAX_TOTAL_BASE64_LENGTH
+        ):
+            raise ValueError("Combined image payload exceeds size limit")
+        return self
 
 
 def create_app(engine_factory, *, eager_load=False):
@@ -42,13 +59,17 @@ def create_app(engine_factory, *, eager_load=False):
     def example():
         return FileResponse(static_dir / "example.json")
 
-    def evaluate(request, image=None):
+    def evaluate(request, image=None, reference_image=None):
         try:
             started = perf_counter()
             schema = request.to_schema()
             state = request.state
             if image is not None:
-                state = VisualState(state_text(state), decode_image(image))
+                state = VisualState(
+                    state_text(state),
+                    decode_image(image),
+                    decode_image(reference_image) if reference_image is not None else None,
+                )
             # Validate schemas and images before loading weights.
             with load_lock:
                 engine = get_engine()
@@ -71,7 +92,11 @@ def create_app(engine_factory, *, eager_load=False):
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "model_loaded": get_engine.cache_info().currsize > 0}
+        return {
+            "status": "ok",
+            "model_loaded": get_engine.cache_info().currsize > 0,
+            "capabilities": {"reference_image": True},
+        }
 
     @app.post("/v1/systemone", response_model=DecisionResponse)
     def systemone(request: SystemOneRequest):
@@ -79,6 +104,6 @@ def create_app(engine_factory, *, eager_load=False):
 
     @app.post("/v1/systemone/debug")
     def systemone_debug(request: DebugRequest):
-        return evaluate(request, request.image)
+        return evaluate(request, request.image, request.reference_image)
 
     return app

@@ -11,7 +11,7 @@ from litjev.api import create_app
 from litjev.backend import TransformersScorer
 from litjev.decision import SchemaDecisionEngine
 from litjev.schema import Choice, DecisionSchema
-from litjev.vision import VisualState, decode_image, encode_image
+from litjev.vision import MAX_BASE64_LENGTH, VisualState, decode_image, encode_image
 
 
 class ImageTokenizer(TinyTokenizer):
@@ -29,6 +29,31 @@ class TinyProcessor:
             "mm_token_type_ids": torch.tensor([[0, 1, 1, 1, 1, 0]]),
             "pixel_values": torch.full((16, 24), float(pixels.mean()) / 255),
             "image_grid_thw": torch.tensor([[1, 4, 4]]),
+        }
+
+
+class DualProcessor:
+    def __init__(self):
+        self.messages = []
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.messages.append(messages)
+        content = messages[-1]["content"]
+        assert [item["type"] for item in content] == ["text", "text", "image", "text", "image"]
+        assert "identity reference" in content[1]["text"]
+        assert "current position" in content[3]["text"]
+        assert content[2]["image"].getpixel((0, 0)) == (17, 17, 17)
+        assert content[4]["image"].getpixel((0, 0)) == (34, 34, 34)
+        return {
+            "input_ids": torch.tensor(
+                [[10, 250, 250, 250, 250, 12, 250, 250, 250, 250, 11]]
+            ),
+            "attention_mask": torch.ones(1, 11, dtype=torch.long),
+            "mm_token_type_ids": torch.tensor([[0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0]]),
+            "pixel_values": torch.cat(
+                [torch.full((16, 24), value / 255) for value in (17, 34)]
+            ),
+            "image_grid_thw": torch.tensor([[1, 4, 4], [1, 4, 4]]),
         }
 
 
@@ -143,6 +168,69 @@ def test_image_api_and_validation_happen_before_model_load():
         payload["image"] = invalid
         assert client.post("/v1/systemone/debug", json=payload).status_code == 422
     assert len(seen) == 1
+
+
+def test_reference_image_api_requires_current_and_preserves_both_images():
+    seen = []
+
+    class RecordingEngine(FakeEngine):
+        def evaluate(self, state, schema):
+            seen.append(state)
+            return super().evaluate(state, schema)
+
+    client = TestClient(create_app(lambda: RecordingEngine()))
+    current = encode_image(np.full((8, 8, 3), 34, np.uint8))
+    reference = encode_image(np.full((8, 8, 3), 17, np.uint8))
+    payload = {
+        "state": "Look",
+        "model": "litjev",
+        "questions": {
+            "a": {"type": "choice", "instructions": "Pick", "criteria": {"A": None, "B": None}}
+        },
+        "image": current,
+        "reference_image": reference,
+    }
+    response = client.post("/v1/systemone/debug", json=payload)
+    assert response.status_code == 200, response.text
+    assert seen[0].image.getpixel((0, 0)) == (34, 34, 34)
+    assert seen[0].reference_image.getpixel((0, 0)) == (17, 17, 17)
+
+    def forbidden():
+        raise AssertionError("invalid reference request must not load weights")
+
+    invalid_client = TestClient(create_app(forbidden))
+    del payload["image"]
+    assert invalid_client.post("/v1/systemone/debug", json=payload).status_code == 422
+    payload["image"] = current
+    payload["reference_image"] = "A" * (MAX_BASE64_LENGTH + 1)
+    assert invalid_client.post("/v1/systemone/debug", json=payload).status_code == 422
+
+
+def test_dual_images_share_processor_prefix_and_continue_mrope_positions():
+    model = tiny_visual_model()
+    processor = DualProcessor()
+    scorer = TransformersScorer(model, ImageTokenizer(), processor=processor)
+    schema = DecisionSchema(
+        {"action": Choice(instructions="Pick", criteria={"A": None, "B": None})}
+    )
+    calls = []
+    hook = model.register_forward_pre_hook(lambda m, a, kw: calls.append(kw), with_kwargs=True)
+    scorer.score(
+        VisualState(
+            "Look at the screen",
+            Image.new("RGB", (8, 8), (34, 34, 34)),
+            Image.new("RGB", (8, 8), (17, 17, 17)),
+        ),
+        schema,
+    )
+    hook.remove()
+    assert len(processor.messages) == 1
+    assert len(calls) == 2
+    assert calls[0]["image_grid_thw"].tolist() == [[1, 4, 4], [1, 4, 4]]
+    assert calls[1]["position_ids"].shape[0] == 3
+    delta = model.model.rope_deltas.to(calls[1]["position_ids"].device)
+    expected = calls[0]["input_ids"].shape[1] + delta.item()
+    assert calls[1]["position_ids"][0, 0, 0].item() == expected
 
 
 def test_image_codec_checks_shape_size_and_format():
